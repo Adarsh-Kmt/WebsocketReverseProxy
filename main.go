@@ -1,26 +1,34 @@
 package main
 
 import (
-	"sync"
+	"net/http"
 	"time"
+
+	"github.com/Adarsh-Kmt/WebsocketReverseProxy/controller"
+	"github.com/Adarsh-Kmt/WebsocketReverseProxy/server"
+	"github.com/gorilla/mux"
 )
 
 func main() {
 
-	rp := InitializeReverseProxy()
+	rp := server.InitializeReverseProxy()
 
-	rwm := sync.RWMutex{}
+	mux := mux.NewRouter()
 
-	periodicFunc := func(rwm *sync.RWMutex) {
+	mc := controller.MessageController{RP: rp}
+
+	mux = mc.InitializeEndPoints(mux)
+
+	periodicFunc := func() {
 
 		for {
-			time.Sleep(2 * time.Second)
-			rp.HealthCheck(rwm)
+			rp.HealthCheck()
+			time.Sleep(10 * time.Second)
 		}
 
 	}
 
-	go periodicFunc(&rwm)
+	go periodicFunc()
 
-	time.Sleep(10000 * time.Second)
+	http.ListenAndServe(":8084", mux)
 }
