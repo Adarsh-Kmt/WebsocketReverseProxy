@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sync"
 
+	"github.com/Adarsh-Kmt/WebsocketReverseProxy/rwmutex"
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/types"
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/util"
 	"github.com/gorilla/websocket"
@@ -27,7 +28,7 @@ type ReverseProxy struct {
 	/*
 		reader-writer mutex used to provide synchronization between HealthCheck go routine (writer) and ConnectUser go routines (readers)
 	*/
-	RWMutex *sync.RWMutex
+	RWMutex *rwmutex.ReadWriteMutex
 }
 
 var upgrader = websocket.Upgrader{
@@ -49,7 +50,7 @@ func InitializeReverseProxy() *ReverseProxy {
 		HealthyEndServerPool: []EndServer{},
 		HESPMutex:            &sync.Mutex{},
 		TESWaitGroup:         &sync.WaitGroup{},
-		RWMutex:              &sync.RWMutex{},
+		RWMutex:              rwmutex.InitializeReadWriteMutex(),
 		GCIDMutex:            &sync.Mutex{},
 		GlobalConnectionId:   &gcid,
 	}
@@ -57,7 +58,7 @@ func InitializeReverseProxy() *ReverseProxy {
 
 func (rp *ReverseProxy) HealthCheck() {
 
-	rp.RWMutex.Lock()
+	rp.RWMutex.WriteLock()
 
 	rp.TESWaitGroup = &sync.WaitGroup{}
 
@@ -78,7 +79,7 @@ func (rp *ReverseProxy) HealthCheck() {
 	log.Printf("length of the healthy end server list after health check: %d", len(rp.HealthyEndServerPool))
 	rp.HESPMutex.Unlock()
 
-	rp.RWMutex.Unlock()
+	rp.RWMutex.WriteUnlock()
 
 }
 
@@ -131,7 +132,7 @@ func HandleWebsocketConnClosure(conn *websocket.Conn, message string) error {
 
 func (rp *ReverseProxy) ConnectUser(w http.ResponseWriter, r *http.Request) {
 
-	rp.RWMutex.RLock()
+	rp.RWMutex.ReadLock()
 
 	rp.GCIDMutex.Lock()
 	*rp.GlobalConnectionId++
@@ -151,7 +152,7 @@ func (rp *ReverseProxy) ConnectUser(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("user connected to end server %s", es.EndServerAddress)
 
-	rp.RWMutex.RUnlock()
+	rp.RWMutex.ReadUnlock()
 
 	url := url.URL{Scheme: "ws", Host: es.EndServerAddress, Path: "/sendMessage"}
 
