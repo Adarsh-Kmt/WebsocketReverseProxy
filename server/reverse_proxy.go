@@ -7,11 +7,14 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/rwmutex"
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/types"
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/util"
+	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
@@ -29,6 +32,8 @@ type ReverseProxy struct {
 		reader-writer mutex used to provide synchronization between HealthCheck go routine (writer) and ConnectUser go routines (readers)
 	*/
 	RWMutex *rwmutex.ReadWriteMutex
+
+	logger *log.Logger
 }
 
 var upgrader = websocket.Upgrader{
@@ -36,7 +41,7 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
-func InitializeReverseProxy() *ReverseProxy {
+func InitializeReverseProxy() http.Handler {
 
 	es1 := InitializeEndServer("es1_hc:8080")
 	es2 := InitializeEndServer("es2_hc:8080")
@@ -45,7 +50,7 @@ func InitializeReverseProxy() *ReverseProxy {
 	gcid := 0
 	esPool := []EndServer{es1, es2, es3}
 
-	return &ReverseProxy{
+	rp := &ReverseProxy{
 		EndServerPool:        esPool,
 		HealthyEndServerPool: []EndServer{},
 		HESPMutex:            &sync.Mutex{},
@@ -53,9 +58,36 @@ func InitializeReverseProxy() *ReverseProxy {
 		RWMutex:              rwmutex.InitializeReadWriteMutex(),
 		GCIDMutex:            &sync.Mutex{},
 		GlobalConnectionId:   &gcid,
+		logger:               log.New(os.Stdout, "LOAD_BALANCER : ", 0),
 	}
+
+	periodicFunc := func() {
+
+		for {
+			rp.HealthCheck()
+			time.Sleep(10 * time.Second)
+		}
+
+	}
+
+	go periodicFunc()
+	mux := mux.NewRouter()
+	mux.Use(rp.LoggingMiddleware)
+	mux.HandleFunc("/sendMessage", util.MakeHttpHandlerFunc(rp.ConnectUser))
+
+	return mux
+
 }
 
+func (rp *ReverseProxy) LoggingMiddleware(handler http.Handler) http.Handler {
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		rp.logger.Printf("received %s request, path %s", r.Method, r.URL.Path)
+		handler.ServeHTTP(w, r)
+		rp.logger.Printf("responded to request")
+	})
+}
 func (rp *ReverseProxy) HealthCheck() {
 
 	rp.RWMutex.WriteLock()
@@ -73,10 +105,10 @@ func (rp *ReverseProxy) HealthCheck() {
 	}
 
 	rp.TESWaitGroup.Wait()
-	log.Println("finished health check.")
+	rp.logger.Println("finished health check.")
 
 	rp.HESPMutex.Lock()
-	log.Printf("length of the healthy end server list after health check: %d", len(rp.HealthyEndServerPool))
+	rp.logger.Printf("length of the healthy end server list after health check: %d", len(rp.HealthyEndServerPool))
 	rp.HESPMutex.Unlock()
 
 	rp.RWMutex.WriteUnlock()
@@ -93,7 +125,7 @@ func (rp *ReverseProxy) TestEndServer(es EndServer) error {
 	response, err := http.Get(fmt.Sprintf("http://" + es.EndServerAddress + "/healthCheck"))
 
 	if err != nil {
-		log.Println(es.EndServerAddress + " health check error: " + err.Error())
+		rp.logger.Println(es.EndServerAddress + " health check error: " + err.Error())
 		return err
 	}
 
@@ -102,10 +134,10 @@ func (rp *ReverseProxy) TestEndServer(es EndServer) error {
 	json.Unmarshal(respBody, &hcr)
 
 	if err != nil {
-		log.Println("error while json decoding health check response: " + err.Error())
+		rp.logger.Println("error while json decoding health check response: " + err.Error())
 		return err
 	}
-	log.Printf("response status received from %s : %d\n", es.EndServerAddress, hcr.Status)
+	rp.logger.Printf("response status received from %s : %d\n", es.EndServerAddress, hcr.Status)
 
 	rp.HESPMutex.Lock()
 	rp.HealthyEndServerPool = append(rp.HealthyEndServerPool, es)
@@ -119,18 +151,11 @@ func (rp *ReverseProxy) TestEndServer(es EndServer) error {
 ConnectUser func used to handle user connection attempts.
 spawns 2 go routines:
 
-1) StartListeningToEndServer : listens to end server websocket connection, writes to user websocket connection.
+1) StartListeningToServer : listens to end server websocket connection, writes to user websocket connection.
 2) StartListeningToUser		 : listens to user websocket connection, writes to end server websocket connection.
 */
 
-func HandleWebsocketConnClosure(conn *websocket.Conn, message string) error {
-
-	err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, message))
-
-	return err
-}
-
-func (rp *ReverseProxy) ConnectUser(w http.ResponseWriter, r *http.Request) {
+func (rp *ReverseProxy) ConnectUser(w http.ResponseWriter, r *http.Request) *util.HTTPError {
 
 	rp.RWMutex.ReadLock()
 
@@ -141,8 +166,8 @@ func (rp *ReverseProxy) ConnectUser(w http.ResponseWriter, r *http.Request) {
 	endServerWebsocketConnId := *rp.GlobalConnectionId
 	rp.GCIDMutex.Unlock()
 
-	log.Printf("end server websocket connection id %d\n", endServerWebsocketConnId)
-	log.Printf("user websocket connection id %d\n", userWebsocketConnId)
+	rp.logger.Printf("end server websocket connection id %d\n", endServerWebsocketConnId)
+	rp.logger.Printf("user websocket connection id %d\n", userWebsocketConnId)
 
 	rp.HESPMutex.Lock()
 	//log.Printf("healthy end server len %d\n", len(rp.HealthyEndServerPool))
@@ -150,7 +175,7 @@ func (rp *ReverseProxy) ConnectUser(w http.ResponseWriter, r *http.Request) {
 	es := rp.HealthyEndServerPool[endServerId]
 	rp.HESPMutex.Unlock()
 
-	log.Printf("user connected to end server %s", es.EndServerAddress)
+	rp.logger.Printf("user connected to end server %s", es.EndServerAddress)
 
 	rp.RWMutex.ReadUnlock()
 
@@ -161,111 +186,20 @@ func (rp *ReverseProxy) ConnectUser(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 
-		log.Fatalf("error while establishing end server websocket connection with address %s : %s ", es.EndServerAddress, err.Error())
+		rp.logger.Printf("error while establishing end server websocket connection with address %s : %s ", es.EndServerAddress, err.Error())
+		return &util.HTTPError{Status: 500, Error: "internal server error"}
 	}
 	userWebsocketConn, err := upgrader.Upgrade(w, r, nil)
 
 	if err != nil {
-		log.Fatalf("error while upgrading user websocket connection: %s ", err.Error())
+		rp.logger.Printf("error while upgrading user websocket connection: %s ", err.Error())
+		return &util.HTTPError{Status: 500, Error: "internal server error"}
 
 	}
 
-	go StartListeningToEndServer(userWebsocketConn, endServerWebsocketConn)
-	go StartListeningToUser(userWebsocketConn, endServerWebsocketConn)
+	go util.StartListeningToServer(userWebsocketConn, endServerWebsocketConn)
+	go util.StartListeningToUser(userWebsocketConn, endServerWebsocketConn)
 
-}
+	return nil
 
-// go routine listens to end server websocket connection, writes to user websocket connection.
-func StartListeningToEndServer(userWebsocketConn *websocket.Conn, endServerWebsocketConn *websocket.Conn) {
-
-	log.Println("listening to end server for messages.....")
-	for {
-
-		_, b, err := endServerWebsocketConn.ReadMessage()
-
-		//log.Printf("load balancer received byte message of length %d from end server.", len(b))
-
-		if err != nil {
-
-			if closeError, ok := err.(*websocket.CloseError); ok {
-				log.Printf("received conn closure from end server with code: %d message : %s", closeError.Code, closeError.Text)
-				HandleWebsocketConnClosure(userWebsocketConn, "internal server error")
-				break
-			}
-			log.Fatalf("error while reading message from websocket connection.")
-
-		}
-		message := string(b)
-
-		if message == "" {
-			log.Println("received empty message from end server.")
-			continue
-		} else {
-			log.Println(message + " received from the end server.")
-		}
-
-		err = userWebsocketConn.WriteMessage(websocket.TextMessage, b)
-
-		if err != nil {
-
-			if closeError, ok := err.(*websocket.CloseError); ok {
-
-				log.Printf("received conn closure from user with code: %d message : %s", closeError.Code, closeError.Text)
-				HandleWebsocketConnClosure(endServerWebsocketConn, "user closed websocket connection")
-				break
-			}
-			log.Fatalf("error while writing message to websocket connection.")
-
-		}
-
-	}
-}
-
-// go routine listens to user websocket connection, writes to end server websocket connection.
-func StartListeningToUser(userWebsocketConn *websocket.Conn, endServerWebsocketConn *websocket.Conn) {
-
-	log.Println("listening to user for messages.....")
-	for {
-
-		_, b, err := userWebsocketConn.ReadMessage()
-
-		if err != nil {
-
-			if closeError, ok := err.(*websocket.CloseError); ok {
-
-				log.Printf("received conn closure from user with code: %d message : %s", closeError.Code, closeError.Text)
-				HandleWebsocketConnClosure(endServerWebsocketConn, "user closed websocket connection")
-				break
-			}
-			log.Fatalf("error while reading message from websocket connection : %s", err.Error())
-
-		}
-		var mr types.MessageRequest
-
-		err = json.Unmarshal(b, &mr)
-
-		if err != nil {
-			log.Printf("error while unmarshalling json: %s", err.Error())
-		}
-		if mr.Body == "" {
-			log.Println("received empty message from user.")
-			continue
-		}
-		log.Printf("load balancer received message %s for %s", mr.Body, mr.ReceiverUsername)
-
-		err = endServerWebsocketConn.WriteMessage(websocket.BinaryMessage, b)
-
-		if err != nil {
-
-			if closeError, ok := err.(*websocket.CloseError); ok {
-
-				log.Printf("received conn closure from end server with code: %d message : %s", closeError.Code, closeError.Text)
-				HandleWebsocketConnClosure(userWebsocketConn, "user closed websocket connection")
-				break
-			}
-			log.Fatalf("error while writing message to websocket connection : %s", err.Error())
-
-		}
-
-	}
 }
