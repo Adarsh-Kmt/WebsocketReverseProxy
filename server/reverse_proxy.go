@@ -8,22 +8,25 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/rwmutex"
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/types"
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/util"
+	"github.com/gookit/ini/v2"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
 type ReverseProxy struct {
-	EndServerPool        []EndServer
-	HealthyEndServerPool []EndServer //contains healthy end server structs.
+	Addr                       string
+	WebsocketServerPool        []Server
+	HealthyWebsocketServerPool []Server //contains healthy end server structs.
 
-	HESPMutex    *sync.Mutex     // mutex used to write to healthy end server pool.
-	TESWaitGroup *sync.WaitGroup // wait group for TestEndServer go routines.
+	HWSPMutex    *sync.Mutex     // mutex used to write to healthy end server pool.
+	TWSWaitGroup *sync.WaitGroup // wait group for TestServer go routines.
 
 	GlobalConnectionId *int
 	GCIDMutex          *sync.Mutex // mutex for updating the global connection ID.
@@ -41,24 +44,72 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
-func InitializeReverseProxy() http.Handler {
+func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
 
-	es1 := InitializeEndServer("es1_hc:8080")
-	es2 := InitializeEndServer("es2_hc:8080")
-	es3 := InitializeEndServer("es3_hc:8080")
+	if _, err := os.Stat(cfgFilePath); os.IsNotExist(err) {
+		log.Fatalf("Config file does not exist")
+	}
+	err := ini.LoadExists(cfgFilePath)
+
+	if err != nil {
+
+		return nil, fmt.Errorf("no .ini file found at file path %s", cfgFilePath)
+	}
+
+	cfg := ini.Default()
+
+	host := cfg.String("frontend.host")
+
+	if host == "" {
+
+		return nil, fmt.Errorf("frontend.host cannot be empty")
+	}
+
+	port := cfg.String("frontend.port")
+
+	if port == "" {
+
+		return nil, fmt.Errorf("frontend.port cannot be empty")
+
+	}
+
+	addr := cfg.String("frontend.host") + ":" + cfg.String("frontend.port")
+
+	ws := cfg.Section("websocket")
+
+	wsServerPool := make([]Server, 0)
+
+	for key, srvAddr := range ws {
+
+		if !strings.HasPrefix(key, "server") {
+			return nil, fmt.Errorf("format for websocket section:\nserver{number}={Address}")
+		}
+
+		wsServerPool = append(wsServerPool, InitializeServer(srvAddr))
+	}
 
 	gcid := 0
-	esPool := []EndServer{es1, es2, es3}
-
 	rp := &ReverseProxy{
-		EndServerPool:        esPool,
-		HealthyEndServerPool: []EndServer{},
-		HESPMutex:            &sync.Mutex{},
-		TESWaitGroup:         &sync.WaitGroup{},
-		RWMutex:              rwmutex.InitializeReadWriteMutex(),
-		GCIDMutex:            &sync.Mutex{},
-		GlobalConnectionId:   &gcid,
-		logger:               log.New(os.Stdout, "LOAD_BALANCER : ", 0),
+		Addr:                       addr,
+		WebsocketServerPool:        wsServerPool,
+		HealthyWebsocketServerPool: []Server{},
+		HWSPMutex:                  &sync.Mutex{},
+		TWSWaitGroup:               &sync.WaitGroup{},
+		RWMutex:                    rwmutex.InitializeReadWriteMutex(),
+		GCIDMutex:                  &sync.Mutex{},
+		GlobalConnectionId:         &gcid,
+		logger:                     log.New(os.Stdout, "LOAD_BALANCER : ", 0),
+	}
+
+	return rp, nil
+
+}
+func NewReverseProxy() (handler http.Handler, addr string, err error) {
+
+	rp, err := ConfigureReverseProxy("/app/reverse-proxy-config.ini")
+
+	if err != nil {
+		return nil, "", err
 	}
 
 	periodicFunc := func() {
@@ -75,7 +126,7 @@ func InitializeReverseProxy() http.Handler {
 	mux.Use(rp.LoggingMiddleware)
 	mux.HandleFunc("/sendMessage", util.MakeHttpHandlerFunc(rp.ConnectUser))
 
-	return mux
+	return mux, rp.Addr, nil
 
 }
 
@@ -92,24 +143,24 @@ func (rp *ReverseProxy) HealthCheck() {
 
 	rp.RWMutex.WriteLock()
 
-	rp.TESWaitGroup = &sync.WaitGroup{}
+	rp.TWSWaitGroup = &sync.WaitGroup{}
 
-	hesPool := make([]EndServer, 0, len(rp.EndServerPool))
+	hesPool := make([]Server, 0, len(rp.WebsocketServerPool))
 	//log.Println("healthy end server pool is empty again.")
 
-	rp.HealthyEndServerPool = hesPool
-	for _, es := range rp.EndServerPool {
+	rp.HealthyWebsocketServerPool = hesPool
+	for _, es := range rp.WebsocketServerPool {
 
-		rp.TESWaitGroup.Add(1)
+		rp.TWSWaitGroup.Add(1)
 		go rp.TestEndServer(es)
 	}
 
-	rp.TESWaitGroup.Wait()
+	rp.TWSWaitGroup.Wait()
 	rp.logger.Println("finished health check.")
 
-	rp.HESPMutex.Lock()
-	rp.logger.Printf("length of the healthy end server list after health check: %d", len(rp.HealthyEndServerPool))
-	rp.HESPMutex.Unlock()
+	rp.HWSPMutex.Lock()
+	rp.logger.Printf("length of the healthy end server list after health check: %d", len(rp.HealthyWebsocketServerPool))
+	rp.HWSPMutex.Unlock()
 
 	rp.RWMutex.WriteUnlock()
 
@@ -118,14 +169,14 @@ func (rp *ReverseProxy) HealthCheck() {
 /*
 go routine used to check wether an end server is online, then writes to HealthyEndServerPool in a thread-safe manner.
 */
-func (rp *ReverseProxy) TestEndServer(es EndServer) error {
+func (rp *ReverseProxy) TestEndServer(s Server) error {
 
-	defer rp.TESWaitGroup.Done()
+	defer rp.TWSWaitGroup.Done()
 
-	response, err := http.Get(fmt.Sprintf("http://" + es.EndServerAddress + "/healthCheck"))
+	response, err := http.Get(fmt.Sprintf("http://" + s.ServerAddress + "/healthCheck"))
 
 	if err != nil {
-		rp.logger.Println(es.EndServerAddress + " health check error: " + err.Error())
+		rp.logger.Println(s.ServerAddress + " health check error: " + err.Error())
 		return err
 	}
 
@@ -137,12 +188,12 @@ func (rp *ReverseProxy) TestEndServer(es EndServer) error {
 		rp.logger.Println("error while json decoding health check response: " + err.Error())
 		return err
 	}
-	rp.logger.Printf("response status received from %s : %d\n", es.EndServerAddress, hcr.Status)
+	rp.logger.Printf("response status received from %s : %d\n", s.ServerAddress, hcr.Status)
 
-	rp.HESPMutex.Lock()
-	rp.HealthyEndServerPool = append(rp.HealthyEndServerPool, es)
+	rp.HWSPMutex.Lock()
+	rp.HealthyWebsocketServerPool = append(rp.HealthyWebsocketServerPool, s)
 	//log.Printf("healthy end server length %d\n", len(rp.HealthyEndServerPool))
-	rp.HESPMutex.Unlock()
+	rp.HWSPMutex.Unlock()
 
 	return nil
 }
@@ -169,24 +220,24 @@ func (rp *ReverseProxy) ConnectUser(w http.ResponseWriter, r *http.Request) *uti
 	rp.logger.Printf("end server websocket connection id %d\n", endServerWebsocketConnId)
 	rp.logger.Printf("user websocket connection id %d\n", userWebsocketConnId)
 
-	rp.HESPMutex.Lock()
+	rp.HWSPMutex.Lock()
 	//log.Printf("healthy end server len %d\n", len(rp.HealthyEndServerPool))
-	endServerId := endServerWebsocketConnId % len(rp.HealthyEndServerPool)
-	es := rp.HealthyEndServerPool[endServerId]
-	rp.HESPMutex.Unlock()
+	endServerId := endServerWebsocketConnId % len(rp.HealthyWebsocketServerPool)
+	s := rp.HealthyWebsocketServerPool[endServerId]
+	rp.HWSPMutex.Unlock()
 
-	rp.logger.Printf("user connected to end server %s", es.EndServerAddress)
+	rp.logger.Printf("user connected to end server %s", s.ServerAddress)
 
 	rp.RWMutex.ReadUnlock()
 
-	url := url.URL{Scheme: "ws", Host: es.EndServerAddress, Path: "/sendMessage"}
+	url := url.URL{Scheme: "ws", Host: s.ServerAddress, Path: "/sendMessage"}
 
 	header := util.InitializeHeaders(r)
 	endServerWebsocketConn, _, err := websocket.DefaultDialer.Dial(url.String(), header)
 
 	if err != nil {
 
-		rp.logger.Printf("error while establishing end server websocket connection with address %s : %s ", es.EndServerAddress, err.Error())
+		rp.logger.Printf("error while establishing end server websocket connection with address %s : %s ", s.ServerAddress, err.Error())
 		return &util.HTTPError{Status: 500, Error: "internal server error"}
 	}
 	userWebsocketConn, err := upgrader.Upgrade(w, r, nil)
