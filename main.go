@@ -26,10 +26,13 @@ func run() error {
 	interruptContext, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	globalHandler := server.InitializeReverseProxy()
+	globalHandler, addr, err := server.NewReverseProxy()
 
+	if err != nil {
+		return err
+	}
 	rp := &http.Server{
-		Addr:    "rp_v3:8084",
+		Addr:    addr,
 		Handler: globalHandler,
 	}
 
