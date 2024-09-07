@@ -165,7 +165,7 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	httph.RWMutex.ReadUnlock()
 
 	httph.logger.Printf("received request %d, Method %s Path %s, forwarded to http server %d", httpRequestId, r.Method, r.URL.Path, httpServer.ServerId)
-	serverChannel := httpServer.TaskChannel
+	serverJobChannel := httpServer.JobChannel
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -173,8 +173,7 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	doneChannel := make(chan struct{})
-	serverChannel <- types.HTTPRequest{ResponseWriter: w, RequestBody: body, Request: r, Done: doneChannel}
-
+	serverJobChannel <- server.Job{ResponseWriter: w, RequestBody: body, Request: r, Done: doneChannel}
 	<-doneChannel
 
 }
