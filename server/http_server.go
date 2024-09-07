@@ -28,7 +28,7 @@ func InitializeHTTPServer(serverAddr string, serverId int) HTTPServer {
 
 	for i := 1; i <= 3; i++ {
 
-		worker := hs.InitializeHTTPWorker(i, hs.Logger)
+		worker := hs.SpawnHTTPWorker(i, hs.Logger)
 		hs.Logger.Printf("Server %d spawning Worker %d...", serverId, i)
 		go worker.ProcessHTTPRequest()
 	}
@@ -52,7 +52,7 @@ type Job struct {
 	Done           chan struct{}
 }
 
-func (hs *HTTPServer) InitializeHTTPWorker(workerId int, lgr *log.Logger) *HTTPWorker {
+func (hs *HTTPServer) SpawnHTTPWorker(workerId int, lgr *log.Logger) *HTTPWorker {
 
 	client := http.Client{}
 
