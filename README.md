@@ -35,7 +35,7 @@ Follow these steps to configure the load balancer for your application using an 
    - Execute the following docker command to create and run the reverse proxy container:
 
      ```powershell
-     docker run -v {absolutePathToConfigFile}:/app/reverse-proxy-config.ini reverse_proxy_v5_http
+     docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini reverse_proxy_v5_http
 
    
 Example Configuration:
