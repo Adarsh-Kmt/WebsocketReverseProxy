@@ -80,7 +80,7 @@ func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
 }
 func NewReverseProxy() (rp *ReverseProxy, addr string, err error) {
 
-	rp, err = ConfigureReverseProxy("/app/reverse-proxy-config.ini")
+	rp, err = ConfigureReverseProxy("/prod/reverse-proxy-config.ini")
 
 	if err != nil {
 		return nil, "", err
