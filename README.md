@@ -25,22 +25,31 @@ Follow these steps to configure the load balancer for your application using an 
 3. **Specify Websocket Server Settings:**
    
    - Under the `[websocket]` section, define your WebSocket servers. Use the format `serverN={host:port}` to list each server.
+     
+4. **Specify HTTP Server Settings:**
+   
+   - Under the `[http]` section, define your HTTP servers. Use the format `serverN={host:port}` to list each server.
 
-4. **Docker Run Command:**
+5. **Docker Run Command:**
 
    - Execute the following docker command to create and run the reverse proxy container:
 
      ```powershell
-     docker run -v {absolutePathToConfigFile}:/app/reverse-proxy-config.ini reverse_proxy_v4_config
+     docker run -v {absolutePathToConfigFile}:/app/reverse-proxy-config.ini reverse_proxy_v5_http
 
    
 Example Configuration:
    ```ini
    [frontend]
-   host=rp_v4
+   host=rp_v5
    port=8084
 
    [websocket]
+   server1=es1_hc:8080
+   server2=es2_hc:8080
+   server3=es3_hc:8080
+
+   [http]
    server1=es1_hc:8080
    server2=es2_hc:8080
    server3=es3_hc:8080
