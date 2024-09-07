@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Adarsh-Kmt/WebsocketReverseProxy/server"
+	"github.com/Adarsh-Kmt/WebsocketReverseProxy/handler"
 )
 
 func main() {
@@ -26,22 +26,22 @@ func run() error {
 	interruptContext, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	globalHandler, addr, err := server.NewReverseProxy()
+	rp, addr, err := handler.NewReverseProxy()
 
 	if err != nil {
 		return err
 	}
-	rp := &http.Server{
+	srv := &http.Server{
 		Addr:    addr,
-		Handler: globalHandler,
+		Handler: rp,
 	}
 
-	go startListening(rp)
+	go startListening(srv)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 
-	go gracefulShutdown(rp, interruptContext, wg)
+	go gracefulShutdown(srv, interruptContext, wg)
 	wg.Wait()
 	return nil
 
