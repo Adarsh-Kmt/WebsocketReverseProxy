@@ -7,30 +7,29 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/Adarsh-Kmt/WebsocketReverseProxy/types"
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/util"
 )
 
 type HTTPServer struct {
-	Addr        string
-	ServerId    int
-	TaskChannel chan types.HTTPRequest
-	logger      *log.Logger
+	Addr       string
+	ServerId   int
+	JobChannel chan Job
+	Logger     *log.Logger
 }
 
 func InitializeHTTPServer(serverAddr string, serverId int) HTTPServer {
 
 	hs := HTTPServer{
-		Addr:        serverAddr,
-		ServerId:    serverId,
-		TaskChannel: make(chan types.HTTPRequest, 3),
-		logger:      log.New(os.Stdout, fmt.Sprintf("HTTP SERVER %d :     ", serverId), 0),
+		Addr:       serverAddr,
+		ServerId:   serverId,
+		JobChannel: make(chan Job, 3),
+		Logger:     log.New(os.Stdout, fmt.Sprintf("HTTP SERVER %d :     ", serverId), 0),
 	}
 
 	for i := 1; i <= 3; i++ {
 
-		worker := hs.InitializeHTTPWorker(i, hs.logger)
-		hs.logger.Printf("Server %d spawning Worker %d...", serverId, i)
+		worker := hs.InitializeHTTPWorker(i, hs.Logger)
+		hs.Logger.Printf("Server %d spawning Worker %d...", serverId, i)
 		go worker.ProcessHTTPRequest()
 	}
 
@@ -41,9 +40,16 @@ func InitializeHTTPServer(serverAddr string, serverId int) HTTPServer {
 type HTTPWorker struct {
 	Addr        string
 	WorkerId    int
-	TaskChannel <-chan types.HTTPRequest
+	TaskChannel <-chan Job
 	HTTPClient  http.Client
 	logger      *log.Logger
+}
+
+type Job struct {
+	ResponseWriter http.ResponseWriter
+	RequestBody    []byte
+	Request        *http.Request
+	Done           chan struct{}
 }
 
 func (hs *HTTPServer) InitializeHTTPWorker(workerId int, lgr *log.Logger) *HTTPWorker {
@@ -53,7 +59,7 @@ func (hs *HTTPServer) InitializeHTTPWorker(workerId int, lgr *log.Logger) *HTTPW
 	return &HTTPWorker{
 		Addr:        hs.Addr,
 		WorkerId:    workerId,
-		TaskChannel: hs.TaskChannel,
+		TaskChannel: hs.JobChannel,
 		HTTPClient:  client,
 		logger:      lgr,
 	}
