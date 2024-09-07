@@ -50,7 +50,7 @@ Follow these steps to configure the load balancer for your application using an 
      docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini reverse_proxy_v5_http
 
    
-Example Configuration:
+## Example Configuration:
    ```ini
    [frontend]
    host=rp_v5
