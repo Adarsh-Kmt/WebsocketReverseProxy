@@ -33,6 +33,14 @@ Follow these steps to configure the load balancer for your application using an 
    
    - Under the `[http]` section, define your HTTP servers. Use the format `serverN={host:port}` to list each server.
 
+5. **Create Health Check Endpoint:**
+
+   - Create a `/healthCheck` endpoint in your HTTP and Websocket Servers, which responds with the following struct as a response:
+     ```go
+     type HealthCheckResponse struct {
+	     Status int `json:"status"`
+     }
+
 5. **Docker Run Command:**
 
    - Execute the following docker command to create and run the reverse proxy container:
