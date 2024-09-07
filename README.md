@@ -36,6 +36,7 @@ Follow these steps to configure the load balancer for your application using an 
 5. **Create Health Check Endpoint:**
 
    - Create a `/healthCheck` endpoint in your HTTP and Websocket Servers, which responds with the following struct as a response:
+     
      ```go
      type HealthCheckResponse struct {
 	     Status int `json:"status"`
