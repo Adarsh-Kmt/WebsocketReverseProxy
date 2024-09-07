@@ -1,10 +1,10 @@
 package util
 
 import (
-	"encoding/json"
+	_ "encoding/json"
 	"log"
 
-	"github.com/Adarsh-Kmt/WebsocketReverseProxy/types"
+	_ "github.com/Adarsh-Kmt/WebsocketReverseProxy/types"
 	"github.com/gorilla/websocket"
 )
 
@@ -16,9 +16,9 @@ func HandleWebsocketConnClosure(conn *websocket.Conn, message string) error {
 }
 
 // go routine listens to end server websocket connection, writes to user websocket connection.
-func StartListeningToServer(userWebsocketConn *websocket.Conn, serverWebsocketConn *websocket.Conn) {
+func StartListeningToServer(userWebsocketConn *websocket.Conn, serverWebsocketConn *websocket.Conn, logger *log.Logger) {
 
-	log.Println("listening to end server for messages.....")
+	logger.Println("listening to server for messages.....")
 	for {
 
 		_, b, err := serverWebsocketConn.ReadMessage()
@@ -32,7 +32,7 @@ func StartListeningToServer(userWebsocketConn *websocket.Conn, serverWebsocketCo
 				HandleWebsocketConnClosure(userWebsocketConn, "internal server error")
 				break
 			}
-			log.Fatalf("error while reading message from websocket connection.")
+			logger.Fatalf("error while reading message from websocket connection.")
 
 		}
 		message := string(b)
@@ -50,11 +50,11 @@ func StartListeningToServer(userWebsocketConn *websocket.Conn, serverWebsocketCo
 
 			if closeError, ok := err.(*websocket.CloseError); ok {
 
-				log.Printf("received conn closure from user with code: %d message : %s", closeError.Code, closeError.Text)
+				logger.Printf("received conn closure from user with code: %d message : %s", closeError.Code, closeError.Text)
 				HandleWebsocketConnClosure(serverWebsocketConn, "user closed websocket connection")
 				break
 			}
-			log.Fatalf("error while writing message to websocket connection.")
+			logger.Fatalf("error while writing message to websocket connection.")
 
 		}
 
@@ -62,9 +62,9 @@ func StartListeningToServer(userWebsocketConn *websocket.Conn, serverWebsocketCo
 }
 
 // go routine listens to user websocket connection, writes to end server websocket connection.
-func StartListeningToUser(userWebsocketConn *websocket.Conn, serverWebsocketConn *websocket.Conn) {
+func StartListeningToUser(userWebsocketConn *websocket.Conn, serverWebsocketConn *websocket.Conn, logger *log.Logger) {
 
-	log.Println("listening to user for messages.....")
+	logger.Println("listening to user for messages.....")
 	for {
 
 		_, b, err := userWebsocketConn.ReadMessage()
@@ -73,37 +73,24 @@ func StartListeningToUser(userWebsocketConn *websocket.Conn, serverWebsocketConn
 
 			if closeError, ok := err.(*websocket.CloseError); ok {
 
-				log.Printf("received conn closure from user with code: %d message : %s", closeError.Code, closeError.Text)
+				logger.Printf("received conn closure from user with code: %d message : %s", closeError.Code, closeError.Text)
 				HandleWebsocketConnClosure(serverWebsocketConn, "user closed websocket connection")
 				break
 			}
-			log.Fatalf("error while reading message from websocket connection : %s", err.Error())
+			logger.Fatalf("error while reading message from websocket connection : %s", err.Error())
 
 		}
-		var mr types.MessageRequest
-
-		err = json.Unmarshal(b, &mr)
-
-		if err != nil {
-			log.Printf("error while unmarshalling json: %s", err.Error())
-		}
-		if mr.Body == "" {
-			log.Println("received empty message from user.")
-			continue
-		}
-		log.Printf("load balancer received message %s for %s", mr.Body, mr.ReceiverUsername)
-
 		err = serverWebsocketConn.WriteMessage(websocket.BinaryMessage, b)
 
 		if err != nil {
 
 			if closeError, ok := err.(*websocket.CloseError); ok {
 
-				log.Printf("received conn closure from server with code: %d message : %s", closeError.Code, closeError.Text)
+				logger.Printf("received conn closure from server with code: %d message : %s", closeError.Code, closeError.Text)
 				HandleWebsocketConnClosure(userWebsocketConn, "user closed websocket connection")
 				break
 			}
-			log.Fatalf("error while writing message to websocket connection : %s", err.Error())
+			logger.Fatalf("error while writing message to websocket connection : %s", err.Error())
 
 		}
 
