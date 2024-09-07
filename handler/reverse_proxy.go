@@ -10,16 +10,22 @@ import (
 	"github.com/gookit/ini/v2"
 )
 
+/*
+ReverseProxy now used as a global http.Handler.
+It checks the scheme of the request, then calls ServeHTTP method of HTTPHandler or WebsocketHandler.
+*/
 type ReverseProxy struct {
 	Addr             string
 	WebsocketHandler http.Handler
 	HTTPHandler      http.Handler
+	logger           *log.Logger
 }
 
 func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
 
+	logger := log.New(os.Stdout, "REVERSE PROXY : ", 0)
 	if _, err := os.Stat(cfgFilePath); os.IsNotExist(err) {
-		log.Fatalf("Config file does not exist")
+		logger.Fatalf("Config file does not exist")
 	}
 	err := ini.LoadExists(cfgFilePath)
 
@@ -66,6 +72,7 @@ func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
 		Addr:             addr,
 		WebsocketHandler: wsHandler,
 		HTTPHandler:      httpHandler,
+		logger:           logger,
 	}
 
 	return rp, nil
@@ -96,7 +103,7 @@ func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	} else {
 		if r.Body == nil {
-			log.Println("empty request body..")
+			rp.logger.Println("empty request body..")
 		}
 		rp.HTTPHandler.ServeHTTP(w, r)
 	}
