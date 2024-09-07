@@ -174,6 +174,11 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	doneChannel := make(chan struct{})
 	serverJobChannel <- server.Job{ResponseWriter: w, RequestBody: body, Request: r, Done: doneChannel}
+
+	/*
+		done channel is used to wait for worker to send request to server, and write response to ResponseWriter.
+		ServeHTTP func needs to wait, as ResponseWriter can only be accessed without giving superflous error while ServeHTTP func is still in execution.
+	*/
 	<-doneChannel
 
 }

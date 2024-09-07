@@ -38,11 +38,11 @@ func InitializeHTTPServer(serverAddr string, serverId int) HTTPServer {
 }
 
 type HTTPWorker struct {
-	Addr        string
-	WorkerId    int
-	TaskChannel <-chan Job
-	HTTPClient  http.Client
-	logger      *log.Logger
+	Addr       string
+	WorkerId   int
+	JobChannel <-chan Job
+	HTTPClient http.Client
+	logger     *log.Logger
 }
 
 type Job struct {
@@ -57,16 +57,21 @@ func (hs *HTTPServer) SpawnHTTPWorker(workerId int, lgr *log.Logger) *HTTPWorker
 	client := http.Client{}
 
 	return &HTTPWorker{
-		Addr:        hs.Addr,
-		WorkerId:    workerId,
-		TaskChannel: hs.JobChannel,
-		HTTPClient:  client,
-		logger:      lgr,
+		Addr:       hs.Addr,
+		WorkerId:   workerId,
+		JobChannel: hs.JobChannel,
+		HTTPClient: client,
+		logger:     lgr,
 	}
 }
+
+/*
+Worker waits to be assigned a Job, by listening to the Job channel.
+Then creates a copy of the request, sends it to the server, and writes response back to the ResponseWriter.
+*/
 func (hw *HTTPWorker) ProcessHTTPRequest() {
 	for {
-		req := <-hw.TaskChannel
+		req := <-hw.JobChannel
 
 		hw.logger.Printf("worker %d received a task... ", hw.WorkerId)
 
