@@ -4,13 +4,15 @@ A light weight fault tolerant reverse proxy, used to load balance websockets and
 
 ## Features:
 
-- Only 26.11 MB in size!!
+- Only 26.12 MB in size!!
 - The load balancer periodically performs health checks to monitor the health status of servers, ensuring that only healthy servers are used to handle incoming traffic.
 - Health checks for all servers are performed concurrently, and the list of healthy servers is updated in a thread-safe manner.
 - Health check (writer) and user connection requests (readers) are managed using a write-preferred reader-writer mutex, that prevents starvation of health check go routines.
-- Worker pool pattern used to maintain persistent TCP connections for each server, with each ”Worker” goroutine handling a connection to a server.
-
-
+- Worker pool pattern used to maintain persistent TCP connections for each server, with each ”Worker” goroutine handling a connection to the server.
+- The number of workers may increase/decrease dynamically based on the load on the load balancer and idle time.
+- The number of worker go routines may:
+    - **Increase** if the buffered channel becomes full, and the timeout has expired.
+    - **Decrease** if a worker remains idle for a configurable amount of time.
 
 ## Load Balancer Setup:
 
@@ -31,15 +33,18 @@ Follow these steps to configure the load balancer for your application using an 
      
 4. **Specify HTTP Server Settings:**
    
-   - Under the `[http]` section, define your HTTP servers. Use the format `serverN={host:port}` to list each server.
+   - Under the `[http]` section, define your HTTP servers.
+   - Use the format `serverN={host:port}` to list the address of each server.
+   - Use `serverN_max_workers=X` to specify the maximum number of workers/TCP connections per server.
+   - Use `serverN_worker_timeout=3` to specify the timeout (in seconds) after which an idle worker/TCP connection will terminate.
 
 5. **Create Health Check Endpoint:**
 
-   - Create a `/healthCheck` GET endpoint in your HTTP and Websocket Servers, which responds with the following struct as a response:
+   - Create a `/healthCheck` GET endpoint in your HTTP and Websocket Servers, which responds with the following json as a response:
      
-     ```go
-     type HealthCheckResponse struct {
-	     Status int `json:"status"`
+     ```json
+     {
+     	"status" : "HTTP status code"
      }
 
 5. **Docker Run Command:**
@@ -47,25 +52,31 @@ Follow these steps to configure the load balancer for your application using an 
    - Execute the following docker command to create and run the reverse proxy container:
 
      ```powershell
-     docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini reverse_proxy_v5_http
+     docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini reverse_proxy_v6_http
 
    
 ## Example Configuration:
 
    ```ini
-   [frontend]
-   host=rp_v5
-   port=8084
+[frontend]
+host=rp_v6
+port=8084
 
-   [websocket]
-   server1=es1_hc:8080
-   server2=es2_hc:8080
-   server3=es3_hc:8080
+[websocket]
+server1=es1_hc:8080
+server2=es2_hc:8080
+server3=es3_hc:8080
 
-   [http]
-   server1=es1_hc:8080
-   server2=es2_hc:8080
-   server3=es3_hc:8080
+[http]
+server1_addr=es1_hc:8080
+server1_max_workers=10
+server1_worker_timeout=3
+server2_addr=es2_hc:8080
+server2_max_workers=10
+server2_worker_timeout=3
+server3_addr=es3_hc:8080
+server3_max_workers=10
+server3_worker_timeout=3
    ```
 
 
