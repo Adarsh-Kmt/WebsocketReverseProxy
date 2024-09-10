@@ -7,13 +7,13 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/rwmutex"
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/server"
 	"github.com/Adarsh-Kmt/WebsocketReverseProxy/types"
+	"github.com/Adarsh-Kmt/WebsocketReverseProxy/util"
 	"github.com/gookit/ini/v2"
 )
 
@@ -77,6 +77,7 @@ func (httph *HTTPHandler) TestHTTPServer(s server.HTTPServer) error {
 
 	var hcr types.HealthCheckResponse
 	respBody, err := io.ReadAll(response.Body)
+	response.Body.Close()
 	json.Unmarshal(respBody, &hcr)
 
 	if err != nil {
@@ -108,20 +109,14 @@ func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
 
 	hs := cfg.Section("http")
 
-	httpServerPool := make([]server.HTTPServer, 0)
+	httpServerPool, err := server.ConfigureHTTPServers(hs)
 
-	serverId := 1
-	for key, srvAddr := range hs {
-
-		if !strings.HasPrefix(key, "server") {
-			return nil, fmt.Errorf("format for http section:\n\n[http]\nserver{number}={Host:Port}")
-		}
-
-		httpServerPool = append(httpServerPool, server.InitializeHTTPServer(srvAddr, serverId))
-		serverId++
+	if err != nil {
+		return nil, err
 	}
 
 	grid := 0
+
 	hh := &HTTPHandler{
 		HTTPServerPool:        httpServerPool,
 		HealthyHTTPServerPool: []server.HTTPServer{},
@@ -137,7 +132,7 @@ func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
 
 		for {
 			hh.HealthCheck()
-			time.Sleep(10 * time.Second)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 
@@ -167,18 +162,60 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	httph.logger.Printf("received request %d, Method %s Path %s, forwarded to http server %d", httpRequestId, r.Method, r.URL.Path, httpServer.ServerId)
 	serverJobChannel := httpServer.JobChannel
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("error while reading the body at handler %s", err.Error())
-	}
-
-	doneChannel := make(chan struct{})
-	serverJobChannel <- server.Job{ResponseWriter: w, RequestBody: body, Request: r, Done: doneChannel}
-
 	/*
 		done channel is used to wait for worker to send request to server, and write response to ResponseWriter.
-		ServeHTTP func needs to wait, as ResponseWriter can only be accessed without giving superflous error while ServeHTTP func is still in execution.
+		ServeHTTP func needs to wait, as ResponseWriter can only be accessed by Worker go routine without giving superflous error while ServeHTTP func is still in execution.
 	*/
-	<-doneChannel
+
+	doneChannel := make(chan struct{})
+
+	/*
+		the following for loop is used to spawn more workers after a timeout.
+		If the maximum number of workers already spawned, then retry deducted.
+		if number of retries reaches 0, then request is not serviced.
+
+	*/
+
+	retries := 5
+
+	for {
+
+		select {
+
+		case serverJobChannel <- server.Job{ResponseWriter: w, Request: r, Done: doneChannel}:
+			<-doneChannel
+			return
+
+		case <-time.After(time.Duration(100) * time.Millisecond):
+
+			httpServer.Logger.Printf("attempting to spawn more workers for HTTP server %d...", httpServer.ServerId)
+
+			httpServer.WorkerCountMutex.Lock()
+
+			if *httpServer.WorkerCount == httpServer.MaxWorkerCount {
+
+				retries--
+				httpServer.Logger.Printf("maximum worker count reached.")
+				if retries == 0 {
+
+					util.WriteJSON(w, 500, map[string]string{"error": "internal server error."})
+					httpServer.WorkerCountMutex.Unlock()
+					return
+				}
+
+				httpServer.WorkerCountMutex.Unlock()
+
+			} else {
+				*httpServer.WorkerCount++
+				workerId := *httpServer.WorkerCount
+				httpServer.WorkerCountMutex.Unlock()
+
+				newWorker := httpServer.SpawnHTTPWorker(workerId, httpServer.WorkerTimeout, httpServer.Logger, httpServer.WorkerCount, httpServer.WorkerCountMutex)
+
+				go newWorker.ProcessHTTPRequest()
+			}
+
+		}
+	}
 
 }
