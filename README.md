@@ -1,12 +1,15 @@
 # WebsocketReverseProxy
-A fault tolerant reverse proxy, used to load balance websockets and http requests.
+A light weight fault tolerant reverse proxy, used to load balance websockets and http requests.
 
 
 ## Features:
 
+- Only 26.11 MB in size!!
 - The load balancer periodically performs health checks to monitor the health status of servers, ensuring that only healthy servers are used to handle incoming traffic.
 - Health checks for all servers are performed concurrently, and the list of healthy servers is updated in a thread-safe manner.
 - Health check (writer) and user connection requests (readers) are managed using a write-preferred reader-writer mutex, that prevents starvation of health check go routines.
+- Worker pool pattern used to maintain persistent TCP connections for each server, with each ”Worker” goroutine handling a connection to a server.
+
 
 
 ## Load Balancer Setup:
