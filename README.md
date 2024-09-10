@@ -36,11 +36,11 @@ Follow these steps to configure the load balancer for your application using an 
    - Under the `[http]` section, define your HTTP servers.
    - Use the format `serverN={host:port}` to list the address of each server.
    - Use `serverN_max_workers=X` to specify the maximum number of workers/TCP connections per server.
-   - Use `server1_worker_timeout=3` to specift the timeout (in seconds) after which an idle worker/TCP connection will terminate.
+   - Use `serverN_worker_timeout=3` to specify the timeout (in seconds) after which an idle worker/TCP connection will terminate.
 
 5. **Create Health Check Endpoint:**
 
-   - Create a `/healthCheck` GET endpoint in your HTTP and Websocket Servers, which responds with the followiing json as a response:
+   - Create a `/healthCheck` GET endpoint in your HTTP and Websocket Servers, which responds with the following json as a response:
      
      ```json
      {
