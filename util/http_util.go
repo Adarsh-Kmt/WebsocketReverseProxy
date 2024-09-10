@@ -26,7 +26,13 @@ func MakeHttpHandlerFunc(f HTTPFunc) http.HandlerFunc {
 	}
 }
 
-func CopyRequest(r *http.Request, body []byte, destinationAddr string) (*http.Request, error) {
+func CopyRequest(r *http.Request, destinationAddr string) (*http.Request, error) {
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("error while reading the body at handler %s", err.Error())
+	}
+	r.Body.Close()
 
 	bodyReader := io.NopCloser(bytes.NewReader(body))
 
@@ -59,9 +65,6 @@ func WriteResponse(w http.ResponseWriter, status int, body []byte) {
 	w.WriteHeader(status)
 	w.Header().Set("Content-Type", "application/json")
 
-	for key, val := range w.Header() {
-		log.Printf("%s %s", key, val)
-	}
 	_, err := w.Write(body)
 	if err != nil {
 		log.Printf("error occured while writing to responseWriter %s", err.Error())
