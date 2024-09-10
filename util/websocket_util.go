@@ -1,10 +1,8 @@
 package util
 
 import (
-	_ "encoding/json"
 	"log"
 
-	_ "github.com/Adarsh-Kmt/WebsocketReverseProxy/types"
 	"github.com/gorilla/websocket"
 )
 
