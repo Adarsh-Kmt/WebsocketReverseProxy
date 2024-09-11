@@ -21,12 +21,13 @@ type HTTPHandler struct {
 	HTTPServerPool        []server.HTTPServer
 	HealthyHTTPServerPool []server.HTTPServer //contains healthy end server structs.
 
-	HHSPMutex    *sync.Mutex     // mutex used to write to healthy end server pool.
-	THSWaitGroup *sync.WaitGroup // wait group for TestHTTPServer go routines.
+	HealthyServerIdChannel   chan int
+	UnhealthyServerIdChannel chan int
 
 	GlobalRequestId *int
 	GRIDMutex       *sync.Mutex // mutex for updating the global connection ID.
 
+	healthCheckClient http.Client
 	/*
 		reader-writer mutex used to provide synchronization between HealthCheck go routine (writer) and ServeHTTP go routines (readers)
 	*/
@@ -37,25 +38,34 @@ type HTTPHandler struct {
 
 func (httph *HTTPHandler) HealthCheck() {
 
-	httph.RWMutex.WriteLock()
-
-	httph.THSWaitGroup = &sync.WaitGroup{}
-
 	hesPool := make([]server.HTTPServer, 0, len(httph.HTTPServerPool))
 
-	httph.HealthyHTTPServerPool = hesPool
 	for _, es := range httph.HTTPServerPool {
 
-		httph.THSWaitGroup.Add(1)
 		go httph.TestHTTPServer(es)
 	}
 
-	httph.THSWaitGroup.Wait()
-	httph.logger.Println("finished health check.")
+	serversResponded := 0
 
-	httph.HHSPMutex.Lock()
-	httph.logger.Printf("length of the healthy websocket server list after health check: %d", len(httph.HealthyHTTPServerPool))
-	httph.HHSPMutex.Unlock()
+	for serversResponded != len(httph.HTTPServerPool) {
+
+		select {
+
+		case serverId := <-httph.HealthyServerIdChannel:
+			hesPool = append(hesPool, httph.HTTPServerPool[serverId-1])
+			serversResponded++
+
+		case <-httph.UnhealthyServerIdChannel:
+			serversResponded++
+
+		}
+
+	}
+	httph.logger.Println("finished health check.")
+	httph.logger.Printf("length of the healthy http server list after health check: %d", len(hesPool))
+
+	httph.RWMutex.WriteLock()
+	httph.HealthyHTTPServerPool = hesPool
 
 	httph.RWMutex.WriteUnlock()
 
@@ -64,15 +74,14 @@ func (httph *HTTPHandler) HealthCheck() {
 /*
 go routine used to check wether an end server is online, then writes to HealthyEndServerPool in a thread-safe manner.
 */
-func (httph *HTTPHandler) TestHTTPServer(s server.HTTPServer) error {
+func (httph *HTTPHandler) TestHTTPServer(s server.HTTPServer) {
 
-	defer httph.THSWaitGroup.Done()
-
-	response, err := http.Get(fmt.Sprintf("http://" + s.Addr + "/healthCheck"))
+	response, err := httph.healthCheckClient.Get(fmt.Sprintf("http://" + s.Addr + "/healthCheck"))
 
 	if err != nil {
 		httph.logger.Println(s.Addr + " health check error: " + err.Error())
-		return err
+		httph.UnhealthyServerIdChannel <- s.ServerId
+		return
 	}
 
 	var hcr types.HealthCheckResponse
@@ -82,15 +91,17 @@ func (httph *HTTPHandler) TestHTTPServer(s server.HTTPServer) error {
 
 	if err != nil {
 		httph.logger.Println("error while json decoding health check response: " + err.Error())
-		return err
+		httph.UnhealthyServerIdChannel <- s.ServerId
+		return
 	}
 	httph.logger.Printf("response status received from %s : %d\n", s.Addr, hcr.Status)
 
-	httph.HHSPMutex.Lock()
-	httph.HealthyHTTPServerPool = append(httph.HealthyHTTPServerPool, s)
-	httph.HHSPMutex.Unlock()
+	if hcr.Status == 200 {
+		httph.HealthyServerIdChannel <- s.ServerId
+	} else {
+		httph.UnhealthyServerIdChannel <- s.ServerId
+	}
 
-	return nil
 }
 
 func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
@@ -118,14 +129,15 @@ func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
 	grid := 0
 
 	hh := &HTTPHandler{
-		HTTPServerPool:        httpServerPool,
-		HealthyHTTPServerPool: []server.HTTPServer{},
-		HHSPMutex:             &sync.Mutex{},
-		THSWaitGroup:          &sync.WaitGroup{},
-		RWMutex:               rwmutex.InitializeReadWriteMutex(),
-		GRIDMutex:             &sync.Mutex{},
-		GlobalRequestId:       &grid,
-		logger:                log.New(os.Stdout, "HTTP_HANDLER :      ", 0),
+		HTTPServerPool:           httpServerPool,
+		HealthyHTTPServerPool:    []server.HTTPServer{},
+		HealthyServerIdChannel:   make(chan int),
+		UnhealthyServerIdChannel: make(chan int),
+		RWMutex:                  rwmutex.InitializeReadWriteMutex(),
+		GRIDMutex:                &sync.Mutex{},
+		GlobalRequestId:          &grid,
+		logger:                   log.New(os.Stdout, "HTTP_HANDLER :      ", 0),
+		healthCheckClient:        http.Client{Timeout: 20 * time.Millisecond},
 	}
 
 	periodicFunc := func() {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,11 @@ type WebsocketHandler struct {
 
 	GlobalConnectionId *int
 	GCIDMutex          *sync.Mutex // mutex for updating the global connection ID.
+
+	healthCheckClient http.Client
+
+	HealthyServerIdChannel   chan int
+	UnhealthyServerIdChannel chan int
 
 	/*
 		reader-writer mutex used to provide synchronization between HealthCheck go routine (writer) and ConnectUser go routines (readers)
@@ -65,6 +71,9 @@ func ConfigureWebsocketHandler(cfgFilePath string) (http.Handler, error) {
 	serverId := 1
 	for key, srvAddr := range ws {
 
+		if key == "conservative_health_check" {
+			continue
+		}
 		if !strings.HasPrefix(key, "server") {
 			return nil, fmt.Errorf("format for websocket section:\n\n[websocket]\nserver{number}={Host:Port}")
 		}
@@ -83,6 +92,9 @@ func ConfigureWebsocketHandler(cfgFilePath string) (http.Handler, error) {
 		GCIDMutex:                  &sync.Mutex{},
 		GlobalConnectionId:         &gcid,
 		logger:                     log.New(os.Stdout, "WEBSOCKET_HANDLER : ", 0),
+		healthCheckClient:          http.Client{Timeout: 20 * time.Millisecond},
+		HealthyServerIdChannel:     make(chan int),
+		UnhealthyServerIdChannel:   make(chan int),
 	}
 
 	periodicFunc := func() {
@@ -101,59 +113,70 @@ func ConfigureWebsocketHandler(cfgFilePath string) (http.Handler, error) {
 
 func (wh *WebsocketHandler) HealthCheck() {
 
-	wh.RWMutex.WriteLock()
-
-	wh.TWSWaitGroup = &sync.WaitGroup{}
-
 	hesPool := make([]server.WebsocketServer, 0, len(wh.WebsocketServerPool))
 
-	wh.HealthyWebsocketServerPool = hesPool
 	for _, es := range wh.WebsocketServerPool {
 
-		wh.TWSWaitGroup.Add(1)
 		go wh.TestWebsocketServer(es)
 	}
 
-	wh.TWSWaitGroup.Wait()
-	wh.logger.Println("finished health check.")
+	serversResponded := 0
 
-	wh.HWSPMutex.Lock()
-	wh.logger.Printf("length of the healthy websocket server list after health check: %d", len(wh.HealthyWebsocketServerPool))
-	wh.HWSPMutex.Unlock()
+	for serversResponded != len(wh.WebsocketServerPool) {
+
+		select {
+
+		case serverId := <-wh.HealthyServerIdChannel:
+			hesPool = append(hesPool, wh.WebsocketServerPool[serverId-1])
+			serversResponded++
+
+		case <-wh.UnhealthyServerIdChannel:
+			serversResponded++
+
+		}
+
+	}
+	wh.logger.Println("finished health check.")
+	wh.logger.Printf("length of the healthy http server list after health check: %d", len(hesPool))
+
+	wh.RWMutex.WriteLock()
+	wh.HealthyWebsocketServerPool = hesPool
 
 	wh.RWMutex.WriteUnlock()
 
 }
 
 /*
-go routine used to check wether an end server is online, then writes to HealthyEndServerPool in a thread-safe manner.
+go routine used to check wether a server is online, then writes to HealthyServerId channel or UnhealthyServerId channel.
 */
-func (wh *WebsocketHandler) TestWebsocketServer(s server.WebsocketServer) error {
+func (wh *WebsocketHandler) TestWebsocketServer(s server.WebsocketServer) {
 
-	defer wh.TWSWaitGroup.Done()
-
-	response, err := http.Get(fmt.Sprintf("http://" + s.Addr + "/healthCheck"))
+	response, err := wh.healthCheckClient.Get(fmt.Sprintf("http://" + s.Addr + "/healthCheck"))
 
 	if err != nil {
 		wh.logger.Println(s.Addr + " health check error: " + err.Error())
-		return err
+		wh.UnhealthyServerIdChannel <- s.ServerId
+		return
 	}
 
 	var hcr types.HealthCheckResponse
 	respBody, err := io.ReadAll(response.Body)
+	response.Body.Close()
 	json.Unmarshal(respBody, &hcr)
 
 	if err != nil {
 		wh.logger.Println("error while json decoding health check response: " + err.Error())
-		return err
+		wh.UnhealthyServerIdChannel <- s.ServerId
+		return
 	}
 	wh.logger.Printf("response status received from %s : %d\n", s.Addr, hcr.Status)
 
-	wh.HWSPMutex.Lock()
-	wh.HealthyWebsocketServerPool = append(wh.HealthyWebsocketServerPool, s)
-	wh.HWSPMutex.Unlock()
+	if hcr.Status == 200 {
+		wh.HealthyServerIdChannel <- s.ServerId
+	} else {
+		wh.UnhealthyServerIdChannel <- s.ServerId
+	}
 
-	return nil
 }
 
 /*
