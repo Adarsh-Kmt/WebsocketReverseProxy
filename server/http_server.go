@@ -54,7 +54,7 @@ func InitializeHTTPServer(serverAddr string, serverId int, workerTimeout int, ma
 	hs := HTTPServer{
 		Addr:             serverAddr,
 		ServerId:         serverId,
-		JobChannel:       make(chan Job, 3),
+		JobChannel:       make(chan Job, 10),
 		Logger:           log.New(os.Stdout, fmt.Sprintf("HTTP SERVER %d :     ", serverId), 0),
 		WorkerTimeout:    workerTimeout,
 		MaxWorkerCount:   maxWorkerCount,
@@ -96,6 +96,7 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 
 		val := httpSection[key]
 		// Only process keys with the prefix "server"
+
 		if !strings.HasPrefix(key, "server") {
 			return nil, fmt.Errorf("format for http section:\n\n[http]\nserver{number}_{config_name}={config}")
 		}
