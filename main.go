@@ -44,13 +44,13 @@ func run() error {
 	interruptContext, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	rp, addr, err := handler.NewReverseProxy()
+	rp, err := handler.ConfigureReverseProxy()
 
 	if err != nil {
 		return err
 	}
 	srv := &http.Server{
-		Addr:    addr,
+		Addr:    rp.Addr,
 		Handler: rp,
 	}
 

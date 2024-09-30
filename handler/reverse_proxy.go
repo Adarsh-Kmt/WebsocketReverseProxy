@@ -21,8 +21,9 @@ type ReverseProxy struct {
 	logger           *log.Logger
 }
 
-func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
+func ConfigureReverseProxy() (*ReverseProxy, error) {
 
+	cfgFilePath := "/prod/reverse-proxy-config.ini"
 	logger := log.New(os.Stdout, "REVERSE PROXY : ", 0)
 	if _, err := os.Stat(cfgFilePath); os.IsNotExist(err) {
 		logger.Fatalf("Config file does not exist")
@@ -57,13 +58,13 @@ func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
 
 	// check wether config file has [websocket] section before configuring Websocket Handler.
 	if cfg.HasSection("websocket") {
-		wsHandler, err = ConfigureWebsocketHandler(cfgFilePath)
+		wsHandler, err = ConfigureWebsocketHandler()
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	httpHandler, err := ConfigureHTTPHandler(cfgFilePath)
+	httpHandler, err := ConfigureHTTPHandler()
 
 	if err != nil {
 		return nil, err
@@ -76,17 +77,6 @@ func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
 	}
 
 	return rp, nil
-
-}
-func NewReverseProxy() (rp *ReverseProxy, addr string, err error) {
-
-	rp, err = ConfigureReverseProxy("/prod/reverse-proxy-config.ini")
-
-	if err != nil {
-		return nil, "", err
-	}
-
-	return rp, rp.Addr, nil
 
 }
 
