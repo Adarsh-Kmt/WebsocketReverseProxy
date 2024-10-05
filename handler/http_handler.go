@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,6 +23,7 @@ type HTTPHandler struct {
 	HTTPServerPool        []server.HTTPServer
 	HealthyHTTPServerPool []server.HTTPServer //contains healthy end server structs.
 
+	Algorithm                string
 	HealthyServerIdChannel   chan int
 	UnhealthyServerIdChannel chan int
 
@@ -36,9 +39,12 @@ type HTTPHandler struct {
 	logger *log.Logger
 }
 
-func (httph *HTTPHandler) HealthCheck() {
+func (httph *HTTPHandler) HealthCheck(wg *sync.WaitGroup) {
 
-	hesPool := make([]server.HTTPServer, 0, len(httph.HTTPServerPool))
+	defer wg.Done()
+
+	hsPool := make([]server.HTTPServer, 0, len(httph.HTTPServerPool))
+	hsIdPool := make([]int, 0)
 
 	for _, es := range httph.HTTPServerPool {
 
@@ -52,7 +58,9 @@ func (httph *HTTPHandler) HealthCheck() {
 		select {
 
 		case serverId := <-httph.HealthyServerIdChannel:
-			hesPool = append(hesPool, httph.HTTPServerPool[serverId-1])
+			//httph.logger.Printf("server %d is healthy...", serverId)
+			//hesPool = append(hesPool, httph.HTTPServerPool[serverId-1])
+			hsIdPool = append(hsIdPool, serverId)
 			serversResponded++
 
 		case <-httph.UnhealthyServerIdChannel:
@@ -61,11 +69,20 @@ func (httph *HTTPHandler) HealthCheck() {
 		}
 
 	}
-	httph.logger.Println("finished health check.")
-	httph.logger.Printf("length of the healthy http server list after health check: %d", len(hesPool))
+
+	if httph.Algorithm == "round-robin" {
+		sort.Ints(hsIdPool)
+	}
+	httph.logger.Printf("length of healthy server id list : %d", len(hsIdPool))
+	for index := range hsIdPool {
+		serverId := hsIdPool[index]
+		hsPool = append(hsPool, httph.HTTPServerPool[serverId-1])
+	}
+	//httph.logger.Println("finished health check.")
+	//httph.logger.Printf("length of the healthy http server list after health check: %d", len(hesPool))
 
 	httph.RWMutex.WriteLock()
-	httph.HealthyHTTPServerPool = hesPool
+	httph.HealthyHTTPServerPool = hsPool
 
 	httph.RWMutex.WriteUnlock()
 
@@ -94,7 +111,7 @@ func (httph *HTTPHandler) TestHTTPServer(s server.HTTPServer) {
 		httph.UnhealthyServerIdChannel <- s.ServerId
 		return
 	}
-	httph.logger.Printf("response status received from %s : %d\n", s.Addr, hcr.Status)
+	//httph.logger.Printf("response status received from %s : %d\n", s.Addr, hcr.Status)
 
 	if hcr.Status == 200 {
 		httph.HealthyServerIdChannel <- s.ServerId
@@ -104,7 +121,9 @@ func (httph *HTTPHandler) TestHTTPServer(s server.HTTPServer) {
 
 }
 
-func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
+func ConfigureHTTPHandler() (http.Handler, error) {
+
+	cfgFilePath := "/prod/reverse-proxy-config.ini"
 
 	if _, err := os.Stat(cfgFilePath); os.IsNotExist(err) {
 		log.Fatalf("Config file does not exist")
@@ -120,6 +139,16 @@ func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
 
 	hs := cfg.Section("http")
 
+	algorithm := "random"
+
+	if algo := cfg.String("http.algorithm"); algo != "" {
+
+		if algo != "round-robin" && algo != "random" {
+			return nil, fmt.Errorf("format for http section:\n\n[http]\nalgorithm={round-robin/random}")
+		}
+		algorithm = algo
+
+	}
 	httpServerPool, err := server.ConfigureHTTPServers(hs)
 
 	if err != nil {
@@ -127,7 +156,7 @@ func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
 	}
 
 	grid := 0
-
+	lg := log.New(os.Stdout, "HTTP_HANDLER :      ", 0)
 	hh := &HTTPHandler{
 		HTTPServerPool:           httpServerPool,
 		HealthyHTTPServerPool:    []server.HTTPServer{},
@@ -136,15 +165,19 @@ func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
 		RWMutex:                  rwmutex.InitializeReadWriteMutex(),
 		GRIDMutex:                &sync.Mutex{},
 		GlobalRequestId:          &grid,
-		logger:                   log.New(os.Stdout, "HTTP_HANDLER :      ", 0),
-		healthCheckClient:        http.Client{Timeout: 20 * time.Millisecond},
+		logger:                   lg,
+		healthCheckClient:        util.InitializeHandlerHTTPClient(lg),
+		Algorithm:                algorithm,
 	}
 
 	periodicFunc := func() {
 
 		for {
-			hh.HealthCheck()
-			time.Sleep(50 * time.Millisecond)
+			wg := &sync.WaitGroup{}
+			wg.Add(1)
+			hh.HealthCheck(wg)
+			wg.Wait()
+			time.Sleep(5 * time.Second)
 		}
 	}
 
@@ -153,25 +186,74 @@ func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
 	return hh, nil
 }
 
-func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (httph *HTTPHandler) ApplyLoadBalancingAlgorithm() server.HTTPServer {
 
-	if r.Body == nil {
-		httph.logger.Println("request body is empty.")
-	}
 	httph.GRIDMutex.Lock()
 	*httph.GlobalRequestId++
 	httpRequestId := *httph.GlobalRequestId
 	httph.GRIDMutex.Unlock()
 
-	httph.RWMutex.ReadLock()
+	var server server.HTTPServer
+	if httph.Algorithm == "round-robin" || httph.Algorithm == "random" {
 
-	serverId := httpRequestId % len(httph.HealthyHTTPServerPool)
+		httph.RWMutex.ReadLock()
 
-	httpServer := httph.HealthyHTTPServerPool[serverId]
+		serverId := httpRequestId % len(httph.HealthyHTTPServerPool)
 
-	httph.RWMutex.ReadUnlock()
+		server = httph.HealthyHTTPServerPool[serverId]
+		httph.logger.Printf("received request %d, forwarded to http server %d", httpRequestId, server.ServerId)
 
-	httph.logger.Printf("received request %d, Method %s Path %s, forwarded to http server %d", httpRequestId, r.Method, r.URL.Path, httpServer.ServerId)
+		httph.RWMutex.ReadUnlock()
+
+	}
+
+	return server
+	// else {
+	// 	httph.RWMutex.ReadLock()
+
+	// 	server1Id := 0
+	// 	server2Id := 0
+
+	// 	for server1Id == server2Id {
+	// 		server1Id = rand.IntN(len(httph.HealthyHTTPServerPool))
+	// 		server2Id = rand.IntN(len(httph.HealthyHTTPServerPool))
+	// 	}
+
+	// 	server1 := httph.HealthyHTTPServerPool[server1Id]
+	// 	server2 := httph.HealthyHTTPServerPool[server2Id]
+
+	// 	httph.RWMutex.ReadUnlock()
+
+	// 	server1.WorkerCountMutex.Lock()
+	// 	server2.WorkerCountMutex.Lock()
+
+	// 	var server server.HTTPServer
+
+	// 	if *server1.WorkerCount <= *server2.WorkerCount {
+	// 		server = server1
+	// 	} else {
+	// 		server = server2
+	// 	}
+
+	// 	server1.WorkerCountMutex.Unlock()
+	// 	server2.WorkerCountMutex.Unlock()
+
+	// 	httph.logger.Printf("received request %d, forwarded to http server %d", httpRequestId, server.ServerId)
+
+	// 	return server
+
+	// }
+
+}
+
+func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
+	if r.Body == nil {
+		httph.logger.Println("request body is empty.")
+	}
+
+	httpServer := httph.ApplyLoadBalancingAlgorithm()
+
 	serverJobChannel := httpServer.JobChannel
 
 	/*
@@ -188,7 +270,8 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	*/
 
-	retries := 5
+	maxRetries := 5.0
+	retriesLeft := 5.0
 
 	for {
 
@@ -198,7 +281,7 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			<-doneChannel
 			return
 
-		case <-time.After(time.Duration(100) * time.Millisecond):
+		case <-time.After(time.Duration(100*math.Pow(2, maxRetries-retriesLeft)) * time.Millisecond):
 
 			httpServer.Logger.Printf("attempting to spawn more workers for HTTP server %d...", httpServer.ServerId)
 
@@ -206,11 +289,11 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if *httpServer.WorkerCount == httpServer.MaxWorkerCount {
 
-				retries--
+				retriesLeft--
 				httpServer.Logger.Printf("maximum worker count reached.")
-				if retries == 0 {
+				if retriesLeft == 0 {
 
-					util.WriteJSON(w, 500, map[string]string{"error": "internal server error."})
+					util.WriteJSON(w, 429, map[string]string{"error": "Too Many Requests."})
 					httpServer.WorkerCountMutex.Unlock()
 					return
 				}
@@ -222,7 +305,7 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				workerId := *httpServer.WorkerCount
 				httpServer.WorkerCountMutex.Unlock()
 
-				newWorker := httpServer.SpawnHTTPWorker(workerId, httpServer.WorkerTimeout, httpServer.Logger, httpServer.WorkerCount, httpServer.WorkerCountMutex)
+				newWorker := httpServer.SpawnHTTPWorker(workerId, httpServer.MinWorkerCount, httpServer.WorkerTimeout, httpServer.Logger, httpServer.WorkerCount, httpServer.WorkerCountMutex)
 
 				go newWorker.ProcessHTTPRequest()
 			}

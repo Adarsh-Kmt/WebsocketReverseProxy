@@ -38,20 +38,22 @@ func main() {
 	}
 
 }
+
 func run() error {
 
 	// interruptContext used to notify gracefulShutdown go routine, when user enters Ctrl + C.
 	interruptContext, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	rp, addr, err := handler.NewReverseProxy()
+	rp, err := handler.ConfigureReverseProxy()
 
 	if err != nil {
 		return err
 	}
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: rp,
+		Addr:      rp.Addr,
+		Handler:   rp,
+		ConnState: rp.LogConnState,
 	}
 
 	go startListening(srv)

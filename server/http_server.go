@@ -20,11 +20,14 @@ type HTTPServer struct {
 	Addr     string
 	ServerId int
 
-	MaxWorkerCount   int
+	MaxWorkerCount int
+	MinWorkerCount int
+
 	WorkerTimeout    int
 	WorkerCount      *int
 	WorkerCountMutex *sync.Mutex
-	JobChannel       chan Job
+
+	JobChannel chan Job
 
 	Logger *log.Logger
 }
@@ -34,9 +37,11 @@ type HTTPWorker struct {
 	WorkerId int
 	Timeout  int
 
-	JobChannel       <-chan Job
+	JobChannel <-chan Job
+
 	WorkerCount      *int
 	WorkerCountMutex *sync.Mutex
+	MinWorkerCount   int
 	HTTPClient       http.Client
 
 	logger *log.Logger
@@ -48,7 +53,7 @@ type Job struct {
 	Done           chan struct{}
 }
 
-func InitializeHTTPServer(serverAddr string, serverId int, workerTimeout int, maxWorkerCount int) HTTPServer {
+func InitializeHTTPServer(serverAddr string, serverId int, workerTimeout int, minWorkerCount int, maxWorkerCount int) HTTPServer {
 
 	wc := 1
 	hs := HTTPServer{
@@ -58,13 +63,14 @@ func InitializeHTTPServer(serverAddr string, serverId int, workerTimeout int, ma
 		Logger:           log.New(os.Stdout, fmt.Sprintf("HTTP SERVER %d :     ", serverId), 0),
 		WorkerTimeout:    workerTimeout,
 		MaxWorkerCount:   maxWorkerCount,
+		MinWorkerCount:   minWorkerCount,
 		WorkerCount:      &wc,
 		WorkerCountMutex: &sync.Mutex{},
 	}
 
-	for workerId := 1; workerId <= 1; workerId++ {
+	for workerId := 1; workerId <= minWorkerCount; workerId++ {
 
-		worker := hs.SpawnHTTPWorker(workerId, hs.WorkerTimeout, hs.Logger, hs.WorkerCount, hs.WorkerCountMutex)
+		worker := hs.SpawnHTTPWorker(workerId, hs.MinWorkerCount, hs.WorkerTimeout, hs.Logger, hs.WorkerCount, hs.WorkerCountMutex)
 		hs.Logger.Printf("Server %d spawning Worker %d...", serverId, workerId)
 		go worker.ProcessHTTPRequest()
 	}
@@ -80,7 +86,8 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 	serverId := 1
 
 	var srvAddr string
-	maxWorkers := 3     // default number of max workers
+	maxWorkers := 3 // default number of max workers
+	minWorkers := 1
 	workerTimeout := 10 // default value for worker timeout
 	addrConfigured := false
 
@@ -97,6 +104,9 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 		val := httpSection[key]
 		// Only process keys with the prefix "server"
 
+		if key == "algorithm" {
+			continue
+		}
 		if !strings.HasPrefix(key, "server") {
 			return nil, fmt.Errorf("format for http section:\n\n[http]\nserver{number}_{config_name}={config}")
 		}
@@ -110,7 +120,8 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 				return nil, fmt.Errorf("invalid config, value of server%d_addr cannot be empty", serverId)
 			}
 
-			httpServerPool = append(httpServerPool, InitializeHTTPServer(srvAddr, serverId, maxWorkers, workerTimeout))
+			log.Printf("HTTP server %d configured with addr : %s worker timeout : %d max workers : %d", serverId, srvAddr, workerTimeout, maxWorkers)
+			httpServerPool = append(httpServerPool, InitializeHTTPServer(srvAddr, serverId, workerTimeout, minWorkers, maxWorkers))
 			serverId = currServerId
 			addrConfigured = false // Reset for the next server
 		}
@@ -127,6 +138,14 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 				return nil, fmt.Errorf("invalid config, server%d_max_workers value must be a valid integer", serverId)
 			}
 
+		} else if strings.HasSuffix(key, "min_workers") {
+
+			var err error
+			minWorkers, err = strconv.Atoi(val)
+			if err != nil {
+				return nil, fmt.Errorf("invalid config, server%d_max_workers value must be a valid integer", serverId)
+			}
+
 		} else if strings.HasSuffix(key, "worker_timeout") {
 			var err error
 			workerTimeout, err = strconv.Atoi(val)
@@ -138,7 +157,7 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 
 	//handling last server to be configured
 	if addrConfigured {
-		httpServerPool = append(httpServerPool, InitializeHTTPServer(srvAddr, serverId, workerTimeout, maxWorkers))
+		httpServerPool = append(httpServerPool, InitializeHTTPServer(srvAddr, serverId, workerTimeout, minWorkers, maxWorkers))
 	} else {
 		return nil, fmt.Errorf("invalid config, value of server%d_addr cannot be empty", serverId)
 	}
@@ -146,13 +165,14 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 	return httpServerPool, nil
 }
 
-func (hs *HTTPServer) SpawnHTTPWorker(workerId int, timeout int, lgr *log.Logger, workerCount *int, workerCountMutex *sync.Mutex) *HTTPWorker {
+func (hs *HTTPServer) SpawnHTTPWorker(workerId int, minWorkerCount int, timeout int, lgr *log.Logger, workerCount *int, workerCountMutex *sync.Mutex) *HTTPWorker {
 
-	client := http.Client{}
+	client := util.InitializeWorkerHTTPClient(lgr, workerId)
 
 	return &HTTPWorker{
 		Addr:             hs.Addr,
 		WorkerId:         workerId,
+		MinWorkerCount:   minWorkerCount,
 		JobChannel:       hs.JobChannel,
 		HTTPClient:       client,
 		logger:           lgr,
@@ -215,10 +235,11 @@ func (hw *HTTPWorker) ProcessHTTPRequest() {
 
 			hw.WorkerCountMutex.Lock()
 
-			if *hw.WorkerCount != 1 {
+			if *hw.WorkerCount != hw.MinWorkerCount {
 				*hw.WorkerCount--
 				hw.logger.Printf(" Worker %d has been idle for %d seconds, exiting.....", hw.WorkerId, hw.Timeout)
 				hw.WorkerCountMutex.Unlock()
+				hw.HTTPClient.CloseIdleConnections()
 				return
 			}
 			hw.WorkerCountMutex.Unlock()
