@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -269,7 +270,8 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	*/
 
-	retries := 5
+	maxRetries := 5.0
+	retriesLeft := 5.0
 
 	for {
 
@@ -279,7 +281,7 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			<-doneChannel
 			return
 
-		case <-time.After(time.Duration(100) * time.Millisecond):
+		case <-time.After(time.Duration(100*math.Pow(2, maxRetries-retriesLeft)) * time.Millisecond):
 
 			httpServer.Logger.Printf("attempting to spawn more workers for HTTP server %d...", httpServer.ServerId)
 
@@ -287,9 +289,9 @@ func (httph *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if *httpServer.WorkerCount == httpServer.MaxWorkerCount {
 
-				retries--
+				retriesLeft--
 				httpServer.Logger.Printf("maximum worker count reached.")
-				if retries == 0 {
+				if retriesLeft == 0 {
 
 					util.WriteJSON(w, 429, map[string]string{"error": "Too Many Requests."})
 					httpServer.WorkerCountMutex.Unlock()
