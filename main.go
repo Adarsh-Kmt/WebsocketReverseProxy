@@ -38,6 +38,7 @@ func main() {
 	}
 
 }
+
 func run() error {
 
 	// interruptContext used to notify gracefulShutdown go routine, when user enters Ctrl + C.
@@ -50,8 +51,9 @@ func run() error {
 		return err
 	}
 	srv := &http.Server{
-		Addr:    rp.Addr,
-		Handler: rp,
+		Addr:      rp.Addr,
+		Handler:   rp,
+		ConnState: rp.LogConnState,
 	}
 
 	go startListening(srv)

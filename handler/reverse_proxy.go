@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 
@@ -52,8 +53,8 @@ func ConfigureReverseProxy() (*ReverseProxy, error) {
 
 	}
 
-	addr := cfg.String("frontend.host") + ":" + cfg.String("frontend.port")
-
+	addr := host + ":" + port
+	logger.Println("load balancer listening on address : " + addr)
 	var wsHandler http.Handler
 
 	// check wether config file has [websocket] section before configuring Websocket Handler.
@@ -96,5 +97,21 @@ func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rp.logger.Println("empty request body..")
 		}
 		rp.HTTPHandler.ServeHTTP(w, r)
+	}
+}
+
+// Connection state logger
+func (rp *ReverseProxy) LogConnState(conn net.Conn, state http.ConnState) {
+	switch state {
+	case http.StateNew:
+		rp.logger.Printf("New connection from %s -> %s\n", conn.RemoteAddr(), conn.LocalAddr())
+	case http.StateActive:
+		rp.logger.Printf("Connection is active from %s\n", conn.RemoteAddr())
+	case http.StateIdle:
+		rp.logger.Printf("Connection is idle from %s\n", conn.RemoteAddr())
+	case http.StateHijacked:
+		rp.logger.Printf("Connection hijacked from %s\n", conn.RemoteAddr())
+	case http.StateClosed:
+		rp.logger.Printf("Connection closed from %s\n", conn.RemoteAddr())
 	}
 }
