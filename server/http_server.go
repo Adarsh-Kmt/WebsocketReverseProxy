@@ -53,13 +53,13 @@ type Job struct {
 	Done           chan struct{}
 }
 
-func InitializeHTTPServer(serverAddr string, serverId int, workerTimeout int, minWorkerCount int, maxWorkerCount int) HTTPServer {
+func InitializeHTTPServer(serverAddr string, serverId int, workerTimeout int, minWorkerCount int, maxWorkerCount int, bufferSize int) HTTPServer {
 
 	wc := 1
 	hs := HTTPServer{
 		Addr:             serverAddr,
 		ServerId:         serverId,
-		JobChannel:       make(chan Job, 10),
+		JobChannel:       make(chan Job, bufferSize),
 		Logger:           log.New(os.Stdout, fmt.Sprintf("HTTP SERVER %d :     ", serverId), 0),
 		WorkerTimeout:    workerTimeout,
 		MaxWorkerCount:   maxWorkerCount,
@@ -86,8 +86,9 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 	serverId := 1
 
 	var srvAddr string
-	maxWorkers := 3 // default number of max workers
-	minWorkers := 1
+	maxWorkers := 3     // default number of max workers
+	minWorkers := 1     // default number of min workers
+	bufferSize := 10    // default value of buffer size
 	workerTimeout := 10 // default value for worker timeout
 	addrConfigured := false
 
@@ -120,8 +121,8 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 				return nil, fmt.Errorf("invalid config, value of server%d_addr cannot be empty", serverId)
 			}
 
-			log.Printf("HTTP server %d configured with addr : %s worker timeout : %d max workers : %d", serverId, srvAddr, workerTimeout, maxWorkers)
-			httpServerPool = append(httpServerPool, InitializeHTTPServer(srvAddr, serverId, workerTimeout, minWorkers, maxWorkers))
+			log.Printf("HTTP server %d configured with addr : %s worker timeout : %d max workers : %d min workers : %d buffer size : %d", serverId, srvAddr, workerTimeout, maxWorkers, minWorkers, bufferSize)
+			httpServerPool = append(httpServerPool, InitializeHTTPServer(srvAddr, serverId, workerTimeout, minWorkers, maxWorkers, bufferSize))
 			serverId = currServerId
 			addrConfigured = false // Reset for the next server
 		}
@@ -152,12 +153,20 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid config, server%d_worker_timeout value must be a valid integer", serverId)
 			}
+		} else if strings.HasSuffix(key, "buffer_size") {
+
+			var err error
+			bufferSize, err = strconv.Atoi(val)
+			if err != nil {
+				return nil, fmt.Errorf("invalid config, server%d_buffer_size value must be a valid integer", serverId)
+			}
 		}
 	}
 
 	//handling last server to be configured
 	if addrConfigured {
-		httpServerPool = append(httpServerPool, InitializeHTTPServer(srvAddr, serverId, workerTimeout, minWorkers, maxWorkers))
+		log.Printf("HTTP server %d configured with addr : %s worker timeout : %d max workers : %d min workers : %d buffer size : %d", serverId, srvAddr, workerTimeout, maxWorkers, minWorkers, bufferSize)
+		httpServerPool = append(httpServerPool, InitializeHTTPServer(srvAddr, serverId, workerTimeout, minWorkers, maxWorkers, bufferSize))
 	} else {
 		return nil, fmt.Errorf("invalid config, value of server%d_addr cannot be empty", serverId)
 	}
