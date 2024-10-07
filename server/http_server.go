@@ -86,10 +86,10 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 	serverId := 1
 
 	var srvAddr string
-	maxWorkers := 3     // default number of max workers
-	minWorkers := 1     // default number of min workers
-	bufferSize := 10    // default value of buffer size
-	workerTimeout := 10 // default value for worker timeout
+	maxWorkers := 3    // default number of max workers
+	minWorkers := 1    // default number of min workers
+	bufferSize := 10   // default value of buffer size
+	workerTimeout := 3 // default value for worker timeout
 	addrConfigured := false
 
 	keysList := make([]string, 0)
@@ -124,7 +124,13 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 			log.Printf("HTTP server %d configured with addr : %s worker timeout : %d max workers : %d min workers : %d buffer size : %d", serverId, srvAddr, workerTimeout, maxWorkers, minWorkers, bufferSize)
 			httpServerPool = append(httpServerPool, InitializeHTTPServer(srvAddr, serverId, workerTimeout, minWorkers, maxWorkers, bufferSize))
 			serverId = currServerId
-			addrConfigured = false // Reset for the next server
+
+			// Reset default values for the next server
+			maxWorkers = 3    // default number of max workers
+			minWorkers = 1    // default number of min workers
+			bufferSize = 10   // default value of buffer size
+			workerTimeout = 3 // default value for worker timeout
+			addrConfigured = false
 		}
 
 		// Process the key to set the appropriate variables
