@@ -13,6 +13,7 @@ A light weight fault tolerant reverse proxy, used to load balance websockets and
 - The number of worker go routines may:
     - **Increase** if the buffered channel becomes full, and the timeout has expired.
     - **Decrease** if a worker remains idle for a configurable amount of time.
+- The load balancer also has support for Websocket connections. Two go routines per connection are used, one to read from client and write to server, and the 2nd goroutine does the opposite.
 
 ## Load Balancer Setup:
 
@@ -39,8 +40,9 @@ Follow these steps to configure the load balancer for your application using an 
    - Use `algorithm={round-robin/random}` to specify load balancing algorithm. (random load balancing algorithm used by default)
    - Use the format `serverN={host:port}` to list the address of each server.
    - Use `serverN_max_workers=X` to specify the maximum number of workers/TCP connections per server.
-   - User `serverN_min_workers=Y` to specify the minimum number of workers/TCP connections to be maintained per server.
+   - Use `serverN_min_workers=Y` to specify the minimum number of workers/TCP connections to be maintained per server.
    - Use `serverN_worker_timeout=Z` to specify the timeout (in seconds) after which an idle worker/TCP connection will terminate.
+   - Use `serverN_buffer_size=W` to specify the maximum number of requests that can be queued in a buffer before being sent to the server.
 
 5. **Create Health Check Endpoint:**
 
@@ -56,14 +58,24 @@ Follow these steps to configure the load balancer for your application using an 
    - Execute the following docker command to create and run the reverse proxy container:
 
      ```powershell
-     docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini reverse_proxy_v10_exp_backoff
+     docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini reverse_proxy_v11_var_buf
 
-   
+## Default Configuration Values
+
+|  Configuration  |  Default Value  |
+|:---------------:|:---------------:|
+|    algorithm    |     random      |
+|   max_workers   |       3         |
+|   min_workers   |       1         |
+|  worker_timeout |       3         |
+|   buffer_size   |      10         |
+
+
 ## Example Configuration:
 
    ```ini
 [frontend]
-host=rp_v10
+host=rp_v11
 port=8080
 
 [websocket]
@@ -79,16 +91,19 @@ server1_addr=es1_hc:8080
 server1_max_workers=10
 server1_min_workers=3
 server1_worker_timeout=3
+server1_buffer_size=20
 #server 2 configuration
 server2_addr=es2_hc:8080
 server2_max_workers=10
 server2_min_workers=3
 server2_worker_timeout=3
+server2_buffer_size=20
 #server 3 configuration
 server3_addr=es3_hc:8080
 server3_max_workers=10
 server3_min_workers=3
 server3_worker_timeout=3
+server3_buffer_size=20
    ```
 
 
