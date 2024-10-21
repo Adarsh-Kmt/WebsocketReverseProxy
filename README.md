@@ -31,12 +31,16 @@ Follow these steps to configure the load balancer for your application using an 
 3. **Specify Websocket Server Settings:**
    
    - Under the `[websocket]` section, define your WebSocket servers. 
+   - Use `enable_health_check={true/false}` to enable health checks.
+   - Use `health_check_interval=W` to configure the frequency with which health checks are performed for Websocket servers.
    - Use `algorithm={round-robin/random}` to specify load balancing algorithm. (random load balancing algorithm used by default)
    - Use the format `serverN={host:port}` to list each server.
 
 4. **Specify HTTP Server Settings:**
    
    - Under the `[http]` section, define your HTTP servers.
+   - Use `enable_health_check={true/false}` to enable health checks.
+   - Use `health_check_interval=W` to configure the frequency with which health checks are performed for HTTP servers.
    - Use `algorithm={round-robin/random}` to specify load balancing algorithm. (random load balancing algorithm used by default)
    - Use the format `serverN={host:port}` to list the address of each server.
    - Use `serverN_max_workers=X` to specify the maximum number of workers/TCP connections per server.
@@ -62,13 +66,14 @@ Follow these steps to configure the load balancer for your application using an 
 
 ## Default Configuration Values
 
-|  Configuration  |  Default Value  |
-|:---------------:|:---------------:|
-|    algorithm    |     random      |
-|   max_workers   |       3         |
-|   min_workers   |       1         |
-|  worker_timeout |       3         |
-|   buffer_size   |      10         |
+|     Configuration      |  Default Value  |
+|:----------------------:|:---------------:|
+|       algorithm        |     random      |
+|      max_workers       |       3         |
+|      min_workers       |       1         |
+|     worker_timeout     |       3 sec     |
+|      buffer_size       |      10         |
+|  health_check_interval |      10 sec     |
 
 
 ## Example Configuration:
@@ -79,12 +84,16 @@ host=rp_v11
 port=8080
 
 [websocket]
+enable_health_check=true
+health_check_interval=10
 algorithm=round-robin
 server1=es1_hc:8080
 server2=es2_hc:8080
 server3=es3_hc:8080
 
 [http]
+enable_health_check=true
+health_check_interval=10
 algorithm=random
 #server 1 configuration
 server1_addr=es1_hc:8080
