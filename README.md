@@ -4,7 +4,7 @@ A light weight fault tolerant reverse proxy, used to load balance websockets and
 
 ## Features:
 
-- Only 26.12 MB in size!!
+- Only 26.21 MB in size!!
 - The load balancer periodically performs health checks to monitor the health status of servers, ensuring that only healthy servers are used to handle incoming traffic.
 - Health checks for all servers are performed concurrently, and the list of healthy servers is updated in a thread-safe manner.
 - Health check (writer) and user connection requests (readers) are managed using a write-preferred reader-writer mutex, that prevents starvation of health check go routines.
@@ -29,14 +29,18 @@ Follow these steps to configure the load balancer for your application using an 
      
 3. **Specify Websocket Server Settings:**
    
-   - Under the `[websocket]` section, define your WebSocket servers. Use the format `serverN={host:port}` to list each server.
-     
+   - Under the `[websocket]` section, define your WebSocket servers. 
+   - Use `algorithm={round-robin/random}` to specify load balancing algorithm. (random load balancing algorithm used by default)
+   - Use the format `serverN={host:port}` to list each server.
+
 4. **Specify HTTP Server Settings:**
    
    - Under the `[http]` section, define your HTTP servers.
+   - Use `algorithm={round-robin/random}` to specify load balancing algorithm. (random load balancing algorithm used by default)
    - Use the format `serverN={host:port}` to list the address of each server.
    - Use `serverN_max_workers=X` to specify the maximum number of workers/TCP connections per server.
-   - Use `serverN_worker_timeout=3` to specify the timeout (in seconds) after which an idle worker/TCP connection will terminate.
+   - User `serverN_min_workers=Y` to specify the minimum number of workers/TCP connections to be maintained per server.
+   - Use `serverN_worker_timeout=Z` to specify the timeout (in seconds) after which an idle worker/TCP connection will terminate.
 
 5. **Create Health Check Endpoint:**
 
@@ -52,30 +56,38 @@ Follow these steps to configure the load balancer for your application using an 
    - Execute the following docker command to create and run the reverse proxy container:
 
      ```powershell
-     docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini reverse_proxy_v6_http
+     docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini reverse_proxy_v10_exp_backoff
 
    
 ## Example Configuration:
 
    ```ini
 [frontend]
-host=rp_v6
-port=8084
+host=rp_v10
+port=8080
 
 [websocket]
+algorithm=round-robin
 server1=es1_hc:8080
 server2=es2_hc:8080
 server3=es3_hc:8080
 
 [http]
+algorithm=random
+#server 1 configuration
 server1_addr=es1_hc:8080
 server1_max_workers=10
+server1_min_workers=3
 server1_worker_timeout=3
+#server 2 configuration
 server2_addr=es2_hc:8080
 server2_max_workers=10
+server2_min_workers=3
 server2_worker_timeout=3
+#server 3 configuration
 server3_addr=es3_hc:8080
 server3_max_workers=10
+server3_min_workers=3
 server3_worker_timeout=3
    ```
 

@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 
@@ -21,8 +22,9 @@ type ReverseProxy struct {
 	logger           *log.Logger
 }
 
-func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
+func ConfigureReverseProxy() (*ReverseProxy, error) {
 
+	cfgFilePath := "/prod/reverse-proxy-config.ini"
 	logger := log.New(os.Stdout, "REVERSE PROXY : ", 0)
 	if _, err := os.Stat(cfgFilePath); os.IsNotExist(err) {
 		logger.Fatalf("Config file does not exist")
@@ -51,19 +53,19 @@ func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
 
 	}
 
-	addr := cfg.String("frontend.host") + ":" + cfg.String("frontend.port")
-
+	addr := host + ":" + port
+	logger.Println("load balancer listening on address : " + addr)
 	var wsHandler http.Handler
 
 	// check wether config file has [websocket] section before configuring Websocket Handler.
 	if cfg.HasSection("websocket") {
-		wsHandler, err = ConfigureWebsocketHandler(cfgFilePath)
+		wsHandler, err = ConfigureWebsocketHandler()
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	httpHandler, err := ConfigureHTTPHandler(cfgFilePath)
+	httpHandler, err := ConfigureHTTPHandler()
 
 	if err != nil {
 		return nil, err
@@ -76,17 +78,6 @@ func ConfigureReverseProxy(cfgFilePath string) (*ReverseProxy, error) {
 	}
 
 	return rp, nil
-
-}
-func NewReverseProxy() (rp *ReverseProxy, addr string, err error) {
-
-	rp, err = ConfigureReverseProxy("/prod/reverse-proxy-config.ini")
-
-	if err != nil {
-		return nil, "", err
-	}
-
-	return rp, rp.Addr, nil
 
 }
 
@@ -106,5 +97,21 @@ func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rp.logger.Println("empty request body..")
 		}
 		rp.HTTPHandler.ServeHTTP(w, r)
+	}
+}
+
+// Connection state logger
+func (rp *ReverseProxy) LogConnState(conn net.Conn, state http.ConnState) {
+	switch state {
+	case http.StateNew:
+		rp.logger.Printf("New connection from %s -> %s\n", conn.RemoteAddr(), conn.LocalAddr())
+	case http.StateActive:
+		rp.logger.Printf("Connection is active from %s\n", conn.RemoteAddr())
+	case http.StateIdle:
+		rp.logger.Printf("Connection is idle from %s\n", conn.RemoteAddr())
+	case http.StateHijacked:
+		rp.logger.Printf("Connection hijacked from %s\n", conn.RemoteAddr())
+	case http.StateClosed:
+		rp.logger.Printf("Connection closed from %s\n", conn.RemoteAddr())
 	}
 }

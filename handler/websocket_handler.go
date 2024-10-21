@@ -8,9 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
-
 	"strings"
+
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ type WebsocketHandler struct {
 	WebsocketServerPool        []server.WebsocketServer
 	HealthyWebsocketServerPool []server.WebsocketServer //contains healthy end server structs.
 
+	Algorithm    string
 	HWSPMutex    *sync.Mutex     // mutex used to write to healthy end server pool.
 	TWSWaitGroup *sync.WaitGroup // wait group for TestServer go routines.
 
@@ -51,7 +53,9 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
-func ConfigureWebsocketHandler(cfgFilePath string) (http.Handler, error) {
+func ConfigureWebsocketHandler() (http.Handler, error) {
+
+	cfgFilePath := "/prod/reverse-proxy-config.ini"
 
 	if _, err := os.Stat(cfgFilePath); os.IsNotExist(err) {
 		log.Fatalf("Config file does not exist")
@@ -91,23 +95,25 @@ func ConfigureWebsocketHandler(cfgFilePath string) (http.Handler, error) {
 		healthCheckInterval = val
 	}
 
-	wsServerPool := make([]server.WebsocketServer, 0)
+	wsServerPool, err := server.ConfigureWebsocketServers(ws)
 
-	serverId := 1
-	for key, srvAddr := range ws {
+	if err != nil {
+		return nil, err
+	}
 
-		if key == "conservative_health_check" {
-			continue
+	algorithm := "random"
+
+	if algo := cfg.String("websocket.algorithm"); algo != "" {
+
+		if algo != "round-robin" && algo != "random" {
+			return nil, fmt.Errorf("format for websocket section:\n\n[websocket]\nalgorithm={round-robin/random}")
 		}
-		if !strings.HasPrefix(key, "server") {
-			return nil, fmt.Errorf("format for websocket section:\n\n[websocket]\nserver{number}={Host:Port}")
-		}
+		algorithm = algo
 
-		wsServerPool = append(wsServerPool, server.InitializeWebsocketServer(srvAddr, 1))
-		serverId++
 	}
 
 	gcid := 0
+	lg := log.New(os.Stdout, "WEBSOCKET_HANDLER : ", 0)
 	wh := &WebsocketHandler{
 		WebsocketServerPool:        wsServerPool,
 		HealthyWebsocketServerPool: []server.WebsocketServer{},
@@ -116,17 +122,21 @@ func ConfigureWebsocketHandler(cfgFilePath string) (http.Handler, error) {
 		RWMutex:                    rwmutex.InitializeReadWriteMutex(),
 		GCIDMutex:                  &sync.Mutex{},
 		GlobalConnectionId:         &gcid,
-		logger:                     log.New(os.Stdout, "WEBSOCKET_HANDLER : ", 0),
-		healthCheckClient:          http.Client{Timeout: 20 * time.Millisecond},
+		logger:                     lg,
+		healthCheckClient:          util.InitializeHandlerHTTPClient(lg),
 		HealthyServerIdChannel:     make(chan int),
 		UnhealthyServerIdChannel:   make(chan int),
+		Algorithm:                  algorithm,
 	}
 
 	periodicFunc := func(healthCheckInterval int) {
 
 		for {
-			wh.HealthCheck()
-			time.Sleep(time.Duration(healthCheckInterval) * time.Second)
+			wg := &sync.WaitGroup{}
+			wg.Add(1)
+			wh.HealthCheck(wg)
+			wg.Wait()
+			time.Sleep(5 * time.Second)
 		}
 	}
 
@@ -138,10 +148,11 @@ func ConfigureWebsocketHandler(cfgFilePath string) (http.Handler, error) {
 
 }
 
-func (wh *WebsocketHandler) HealthCheck() {
+func (wh *WebsocketHandler) HealthCheck(wg *sync.WaitGroup) {
 
-	hesPool := make([]server.WebsocketServer, 0, len(wh.WebsocketServerPool))
-
+	defer wg.Done()
+	hwsPool := make([]server.WebsocketServer, 0, len(wh.WebsocketServerPool))
+	hwsIdPool := make([]int, 0)
 	for _, es := range wh.WebsocketServerPool {
 
 		go wh.TestWebsocketServer(es)
@@ -154,7 +165,8 @@ func (wh *WebsocketHandler) HealthCheck() {
 		select {
 
 		case serverId := <-wh.HealthyServerIdChannel:
-			hesPool = append(hesPool, wh.WebsocketServerPool[serverId-1])
+			//hesPool = append(hesPool, wh.WebsocketServerPool[serverId-1])
+			hwsIdPool = append(hwsIdPool, serverId)
 			serversResponded++
 
 		case <-wh.UnhealthyServerIdChannel:
@@ -163,11 +175,19 @@ func (wh *WebsocketHandler) HealthCheck() {
 		}
 
 	}
-	wh.logger.Println("finished health check.")
-	wh.logger.Printf("length of the healthy http server list after health check: %d", len(hesPool))
+
+	if wh.Algorithm == "round-robin" {
+		sort.Ints(hwsIdPool)
+	}
+	wh.logger.Printf("length of healthy server id list : %d", len(hwsIdPool))
+	for serverId := range hwsIdPool {
+		hwsPool = append(hwsPool, wh.WebsocketServerPool[serverId])
+	}
+	//wh.logger.Println("finished health check.")
+	//wh.logger.Printf("length of the healthy http server list after health check: %d", len(hesPool))
 
 	wh.RWMutex.WriteLock()
-	wh.HealthyWebsocketServerPool = hesPool
+	wh.HealthyWebsocketServerPool = hwsPool
 
 	wh.RWMutex.WriteUnlock()
 
@@ -196,13 +216,77 @@ func (wh *WebsocketHandler) TestWebsocketServer(s server.WebsocketServer) {
 		wh.UnhealthyServerIdChannel <- s.ServerId
 		return
 	}
-	wh.logger.Printf("response status received from %s : %d\n", s.Addr, hcr.Status)
+	//wh.logger.Printf("response status received from %s : %d\n", s.Addr, hcr.Status)
 
 	if hcr.Status == 200 {
 		wh.HealthyServerIdChannel <- s.ServerId
 	} else {
 		wh.UnhealthyServerIdChannel <- s.ServerId
 	}
+
+}
+
+func (wh *WebsocketHandler) ApplyLoadBalancingAlgorithm() server.WebsocketServer {
+
+	wh.GCIDMutex.Lock()
+	*wh.GlobalConnectionId++
+	userWebsocketConnId := *wh.GlobalConnectionId
+	*wh.GlobalConnectionId++
+	serverWebsocketConnId := *wh.GlobalConnectionId
+	wh.GCIDMutex.Unlock()
+
+	var server server.WebsocketServer
+	if wh.Algorithm == "round-robin" || wh.Algorithm == "random" {
+
+		wh.logger.Printf("websocket server websocket connection id %d\n", serverWebsocketConnId)
+		wh.logger.Printf("user websocket connection id %d\n", userWebsocketConnId)
+
+		wh.RWMutex.ReadLock()
+
+		serverId := serverWebsocketConnId % len(wh.HealthyWebsocketServerPool)
+		server = wh.HealthyWebsocketServerPool[serverId]
+
+		wh.logger.Printf("user connected to server %s", server.Addr)
+
+		wh.RWMutex.ReadUnlock()
+
+	}
+	return server
+	// else {
+
+	// 	wh.RWMutex.ReadLock()
+
+	// 	server1Id := 0
+	// 	server2Id := 0
+
+	// 	for server1Id == server2Id {
+	// 		server1Id = rand.IntN(len(wh.HealthyWebsocketServerPool))
+	// 		server2Id = rand.IntN(len(wh.HealthyWebsocketServerPool))
+	// 	}
+
+	// 	server1 := wh.HealthyWebsocketServerPool[server1Id]
+	// 	server2 := wh.HealthyWebsocketServerPool[server2Id]
+
+	// 	wh.RWMutex.ReadUnlock()
+
+	// 	server1.NumConnMutex.Lock()
+	// 	server2.NumConnMutex.Lock()
+
+	// 	var server server.WebsocketServer
+
+	// 	if *server1.NumConns <= *server2.NumConns {
+	// 		server = server1
+	// 	} else {
+	// 		server = server2
+	// 	}
+
+	// 	server1.NumConnMutex.Unlock()
+	// 	server2.NumConnMutex.Unlock()
+
+	// 	//wh.logger.Printf("received request %d, forwarded to http server %d", httpRequestId, server.ServerId)
+
+	// 	return server
+	// }
 
 }
 
@@ -218,33 +302,16 @@ func (wh *WebsocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	wh.logger.Printf("received %s request, path %s", r.Method, r.URL.Path)
 
-	wh.GCIDMutex.Lock()
-	*wh.GlobalConnectionId++
-	userWebsocketConnId := *wh.GlobalConnectionId
-	*wh.GlobalConnectionId++
-	serverWebsocketConnId := *wh.GlobalConnectionId
-	wh.GCIDMutex.Unlock()
+	websocketServer := wh.ApplyLoadBalancingAlgorithm()
 
-	wh.logger.Printf("websocket server websocket connection id %d\n", serverWebsocketConnId)
-	wh.logger.Printf("user websocket connection id %d\n", userWebsocketConnId)
-
-	wh.RWMutex.ReadLock()
-
-	serverId := serverWebsocketConnId % len(wh.HealthyWebsocketServerPool)
-	s := wh.HealthyWebsocketServerPool[serverId]
-
-	wh.logger.Printf("user connected to server %s", s.Addr)
-
-	wh.RWMutex.ReadUnlock()
-
-	url := url.URL{Scheme: "ws", Host: s.Addr, Path: r.URL.Path}
+	url := url.URL{Scheme: "ws", Host: websocketServer.Addr, Path: r.URL.Path}
 
 	header := util.InitializeHeaders(r)
 	WSServerWebsocketConn, _, err := websocket.DefaultDialer.Dial(url.String(), header)
 
 	if err != nil {
 
-		wh.logger.Printf("error while establishing server websocket connection with address %s : %s ", s.Addr, err.Error())
+		wh.logger.Printf("error while establishing server websocket connection with address %s : %s ", websocketServer.Addr, err.Error())
 		util.WriteJSON(w, 500, map[string]string{"error": "internal server error"})
 		return
 	}
@@ -257,8 +324,8 @@ func (wh *WebsocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	}
 
-	go util.StartListeningToServer(userWebsocketConn, WSServerWebsocketConn, s.Logger)
-	go util.StartListeningToUser(userWebsocketConn, WSServerWebsocketConn, s.Logger)
+	go util.StartListeningToServer(userWebsocketConn, WSServerWebsocketConn, websocketServer.Logger)
+	go util.StartListeningToUser(userWebsocketConn, WSServerWebsocketConn, websocketServer.Logger)
 
 	wh.logger.Printf("responded to request")
 

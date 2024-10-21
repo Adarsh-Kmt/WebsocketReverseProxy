@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 type HTTPFunc func(http.ResponseWriter, *http.Request) *HTTPError
@@ -16,6 +18,77 @@ type HTTPError struct {
 	Error  string
 }
 
+type WorkerDialer struct {
+	WorkerId int
+	Logger   *log.Logger
+	Dialer   net.Dialer
+}
+
+type HandlerDialer struct {
+	Logger *log.Logger
+	Dialer net.Dialer
+}
+
+func (wd *WorkerDialer) Dial(network, address string) (net.Conn, error) {
+
+	conn, err := wd.Dialer.Dial(network, address)
+
+	if err != nil {
+
+		return nil, err
+	}
+
+	wd.Logger.Printf("Worker %d created %s connection from source addr : %s to destination addr : %s", wd.WorkerId, network, conn.LocalAddr().String(), address)
+
+	return conn, nil
+}
+
+func InitializeWorkerHTTPClient(logger *log.Logger, workerId int) http.Client {
+
+	dialer := &WorkerDialer{
+		Logger:   logger,
+		Dialer:   net.Dialer{},
+		WorkerId: workerId,
+	}
+
+	transport := &http.Transport{
+		Dial: dialer.Dial,
+	}
+
+	return http.Client{
+
+		Transport: transport,
+	}
+}
+
+func (hd *HandlerDialer) Dial(network, address string) (net.Conn, error) {
+
+	conn, err := hd.Dialer.Dial(network, address)
+
+	if err != nil {
+
+		return nil, err
+	}
+
+	hd.Logger.Printf("created %s connection from source addr : %s to destination addr : %s", network, conn.LocalAddr().String(), address)
+
+	return conn, nil
+}
+func InitializeHandlerHTTPClient(logger *log.Logger) http.Client {
+
+	dialer := &HandlerDialer{
+		Logger: logger,
+		Dialer: net.Dialer{},
+	}
+
+	return http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+
+			Dial: dialer.Dial,
+		},
+	}
+}
 func MakeHttpHandlerFunc(f HTTPFunc) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +110,7 @@ func CopyRequest(r *http.Request, destinationAddr string) (*http.Request, error)
 	bodyReader := io.NopCloser(bytes.NewReader(body))
 
 	newURL := url.URL{Scheme: "http", Host: destinationAddr, Path: r.URL.Path}
-	log.Printf("new request for %s", newURL.String())
+
 	r2, err := http.NewRequest(r.Method, newURL.String(), bodyReader)
 
 	for key, values := range r.Header {
@@ -49,7 +122,7 @@ func CopyRequest(r *http.Request, destinationAddr string) (*http.Request, error)
 }
 
 func WriteJSON(w http.ResponseWriter, status int, body any) {
-	log.Println("called this function.")
+	//log.Println("called this function.")
 	w.WriteHeader(status)
 	w.Header().Set("Content-Type", "application/json")
 
