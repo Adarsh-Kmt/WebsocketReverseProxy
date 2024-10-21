@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,6 +122,29 @@ func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
 
 	hs := cfg.Section("http")
 
+	hcEnabledString := strings.ToLower(cfg.String("http.enable_health_check"))
+
+	var healthCheckEnabled bool
+
+	if hcEnabledString == "" || hcEnabledString == "false" {
+		healthCheckEnabled = false
+	} else if hcEnabledString == "true" {
+		healthCheckEnabled = true
+	} else {
+		return nil, fmt.Errorf("invalid config, websocket.enable_health_check should be true/false")
+	}
+
+	healthCheckInterval := 10
+	hcIntervalString := cfg.String("websocket.health_check_interval")
+
+	if hcIntervalString != "" {
+		val, err := strconv.Atoi(hcIntervalString)
+		if err != nil {
+			return nil, fmt.Errorf("invalid config, websocket.health_check_interval should be a valid integer")
+		}
+		healthCheckInterval = val
+	}
+
 	httpServerPool, err := server.ConfigureHTTPServers(hs)
 
 	if err != nil {
@@ -140,15 +165,17 @@ func ConfigureHTTPHandler(cfgFilePath string) (http.Handler, error) {
 		healthCheckClient:        http.Client{Timeout: 20 * time.Millisecond},
 	}
 
-	periodicFunc := func() {
+	periodicFunc := func(healthCheckInterval int) {
 
 		for {
 			hh.HealthCheck()
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(time.Duration(healthCheckInterval) * time.Second)
 		}
 	}
 
-	go periodicFunc()
+	if healthCheckEnabled {
+		go periodicFunc(healthCheckInterval)
+	}
 
 	return hh, nil
 }
