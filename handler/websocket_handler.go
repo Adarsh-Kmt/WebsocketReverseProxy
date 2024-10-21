@@ -136,12 +136,15 @@ func ConfigureWebsocketHandler() (http.Handler, error) {
 			wg.Add(1)
 			wh.HealthCheck(wg)
 			wg.Wait()
-			time.Sleep(5 * time.Second)
+			time.Sleep(time.Duration(healthCheckInterval) * time.Second)
 		}
 	}
 
 	if healthCheckEnabled {
-		go periodicFunc(int(healthCheckInterval))
+		go periodicFunc(healthCheckInterval)
+	} else {
+		wh.HealthyWebsocketServerPool = make([]server.WebsocketServer, len(wh.WebsocketServerPool))
+		copy(wh.HealthyWebsocketServerPool, wh.WebsocketServerPool)
 	}
 
 	return wh, nil

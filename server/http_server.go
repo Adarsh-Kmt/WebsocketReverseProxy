@@ -104,7 +104,7 @@ func ConfigureHTTPServers(httpSection ini.Section) ([]HTTPServer, error) {
 		val := httpSection[key]
 		// Only process keys with the prefix "server"
 
-		if key == "algorithm" {
+		if key == "algorithm" || key == "enable_health_check" || key == "health_check_interval" {
 			continue
 		}
 		if !strings.HasPrefix(key, "server") {

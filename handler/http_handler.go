@@ -202,12 +202,16 @@ func ConfigureHTTPHandler() (http.Handler, error) {
 			wg.Add(1)
 			hh.HealthCheck(wg)
 			wg.Wait()
-			time.Sleep(5 * time.Second)
+			time.Sleep(time.Duration(healthCheckInterval) * time.Second)
 		}
 	}
 
 	if healthCheckEnabled {
 		go periodicFunc(healthCheckInterval)
+	} else {
+		hh.HealthyHTTPServerPool = make([]server.HTTPServer, len(hh.HTTPServerPool))
+		copy(hh.HealthyHTTPServerPool, hh.HTTPServerPool)
+		log.Printf("size of healthy HTTP server pool : %d\n", len(hh.HealthyHTTPServerPool))
 	}
 
 	return hh, nil
