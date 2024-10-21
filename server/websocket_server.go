@@ -31,7 +31,7 @@ func ConfigureWebsocketServers(websocketSection ini.Section) ([]WebsocketServer,
 
 	for key, srvAddr := range websocketSection {
 
-		if key == "algorithm" {
+		if key == "algorithm" || key == "enable_health_check" || key == "health_check_interval" {
 			continue
 		}
 		if !strings.HasPrefix(key, "server") {
