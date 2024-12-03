@@ -11,16 +11,16 @@ A light weight fault tolerant reverse proxy, used to load balance websockets and
 - Worker pool pattern used to maintain persistent TCP connections for each server, with each ”Worker” goroutine handling a connection to the server.
 - The number of workers may increase/decrease dynamically based on the load on the load balancer and idle time.
 - The number of worker go routines may:
-    - **Increase** if the buffered channel becomes full, and the timeout has expired.
+    - **Increase** if the buffered channel is full.
     - **Decrease** if a worker remains idle for a configurable amount of time.
-- The load balancer also has support for Websocket connections. Two go routines per connection are used, one to read from client and write to server, and the 2nd goroutine does the opposite.
+- The load balancer also has support for Websocket connections. Two go routines per user are used, one to read from client and write to server, and the 2nd goroutine does the opposite.
 
 ## Load Balancer Setup:
 
 Follow these steps to configure the load balancer for your application using an `.ini` file.
 
 
-1. **Create an `.ini` file:**
+1. **Create a `.ini` file:**
 
    - Create a new `.ini` file to store your load balancer configuration.
 
