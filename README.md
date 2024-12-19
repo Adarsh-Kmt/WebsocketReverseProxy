@@ -57,12 +57,19 @@ Follow these steps to configure the load balancer for your application using an 
      	"status" : "HTTP status code"
      }
 
-5. **Docker Run Command:**
+6. **Docker pull Command:**
+
+   - Execute the following docker command to pull the reverse proxy image from docker hub:
+     
+     ```powershell
+     docker pull adarshkamath/load-balancer:2.0.0
+   
+7. **Docker Run Command:**
 
    - Execute the following docker command to create and run the reverse proxy container:
 
      ```powershell
-     docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini reverse_proxy_v11_var_buf
+     docker run -v {absolutePathToConfigFile}:/prod/reverse-proxy-config.ini adarshkamath/load-balancer:2.0.0
 
 ## Default Configuration Values
 
