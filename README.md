@@ -122,6 +122,10 @@ server3_worker_timeout=3
 server3_buffer_size=20
    ```
 
+## TODO:
+- [ ] Implement passive health checks by monitoring the number of 500 internal server error responses.
+- [ ] Implement dynamic weighted round robin, where the server responds to a health check with CPU and memory utilization, which is used to calculate its weight.
+  
 
 ## License:
 
