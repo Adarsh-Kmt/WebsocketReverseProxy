@@ -84,8 +84,8 @@ func InitializeHandlerHTTPClient(logger *log.Logger) http.Client {
 	return http.Client{
 		Timeout: 2 * time.Second,
 		Transport: &http.Transport{
-
-			Dial: dialer.Dial,
+			MaxIdleConnsPerHost: 1,
+			Dial:                dialer.Dial,
 		},
 	}
 }
